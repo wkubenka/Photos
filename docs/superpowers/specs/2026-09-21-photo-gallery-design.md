@@ -90,7 +90,7 @@ One bucket, one CloudFront distribution, no CORS configuration required.
 index.html                    Site entry point
 assets/*.<hash>.{js,css}      Vite build output
 robots.txt                    AI crawler opt-out
-data/index.json               Schema version, counts, page list
+data/index.json               Schema version, counts, shard list
 data/page-0001.json           Photo records
 data/keys.json                KDF parameters, verifier, wrapped data keys
 web/<id>-2048.<hash>.jpg      Display copy
