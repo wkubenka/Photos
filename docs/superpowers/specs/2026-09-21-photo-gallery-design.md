@@ -11,6 +11,12 @@ originals are stored encrypted and unlocked in the browser with a shared
 password, so friends and family can see the originals while everyone else
 sees only the smaller copies.
 
+**Expected volume: about 5 photos a day, ~1,800 a year.** Every uploaded photo
+is already a keeper selected from a larger day's shooting, so the archive is
+dense rather than padded. This number drives two structural choices: the
+library is sharded by month from day one rather than "later," and the home page
+is a small curated set rather than the head of the stream.
+
 Three deliverables:
 
 1. A command-line tool that ingests photos, resizes them for the web, stamps
@@ -33,8 +39,9 @@ Three deliverables:
   backend, so there is no access log of unlock attempts.
 - Preventing a person who has the password from redistributing originals.
 - Serving the gallery without JavaScript.
-- Search, tags, albums, or collections. Deferred until the library is large
-  enough to need them.
+- Search, tags, and shoot/session grouping. Deferred; see section 11.
+- A continuously scrolling timeline with a scrubber. Month navigation is the
+  chosen model; see section 11 for why this remains an available upgrade.
 
 ## 2. Decisions
 
@@ -48,7 +55,9 @@ Three deliverables:
 | Site build | Vite, vanilla TypeScript, no framework | The complexity is in the crypto, not the view layer |
 | Shared code | One `core/` module used by CLI and browser, via WebCrypto | Makes writer/reader format drift structurally impossible |
 | CLI stack | Node 20+ / TypeScript | Shares `core/` with the site |
-| Pagination | Single page file now, sharding behind a loader interface | Simplest thing that does not become a rewrite later |
+| Navigation | Month is the unit: one shard file per month, a year/month rail | At ~150 photos/month, the transport unit and the navigation unit can be the same object |
+| URL stability | `?m=YYYY-MM`, never `?page=N` | Page numbers renumber as photos are added; a month never does |
+| Home page | A curated `featured` set, with the full archive behind "Browse all" | At 1,800 photos/year the front door must be editorial, not chronological |
 | Watermarking | None | Rejected: permanently degrades the image people came to see |
 
 ### Rejected alternatives
@@ -90,8 +99,9 @@ One bucket, one CloudFront distribution, no CORS configuration required.
 index.html                    Site entry point
 assets/*.<hash>.{js,css}      Vite build output
 robots.txt                    AI crawler opt-out
-data/index.json               Schema version, counts, shard list
-data/page-0001.json           Photo records
+data/index.json               Schema version, counts, month list
+data/months/2026-03.json      Photo records for one month (a shard)
+data/featured.json            The curated home-page set
 data/keys.json                KDF parameters, verifier, wrapped data keys
 web/<id>-2048.<hash>.jpg      Display copy
 web/<id>-640.<hash>.jpg       Grid thumbnail
@@ -139,36 +149,41 @@ there are no third-party scripts to be injected through.
   "schemaVersion": 1,
   "generatedAt": "2026-09-21T14:02:11Z",
   "lastBackupAt": "2026-09-19T08:30:00Z",
-  "photoCount": 137,
-  "pageSize": 60,
-  "shardSize": 300,
+  "photoCount": 1837,
+  "featuredCount": 34,
   "sort": "takenAt:desc",
-  "shards": ["data/page-0001.json", "data/page-0002.json"]
+  "months": [
+    { "month": "2026-09", "count": 104, "path": "data/months/2026-09.json" },
+    { "month": "2026-08", "count": 151, "path": "data/months/2026-08.json" },
+    { "month": "2026-07", "count": 147, "path": "data/months/2026-07.json" }
+  ]
 }
 ```
 
-Photos are sorted by `takenAt` descending, and shards are listed newest first.
+`months` is ordered newest first and lists only months that actually contain
+photos, so the navigation rail never offers an empty month. Counts let the rail
+render "August 2026 (151)" without fetching anything.
 
-Two different numbers are at work here, and conflating them is the easiest
-mistake to make in this design:
+This one file is the entire table of contents. It stays small — roughly 80
+bytes per month, so under 10 KB after a decade — and it is the only file the
+site must load before it can render anything.
 
-- **`pageSize`** is a display concern: how many photos the grid shows before
-  the reader clicks to the next page. The site slices this out of whatever it
-  has already loaded.
-- **`shardSize`** is a transport concern: how many photo records go in one JSON
-  file. Below `shardThreshold` total photos there is exactly one shard holding
-  the entire library, and the grid still paginates by `pageSize` client-side.
-
-So a 137-photo library is one shard file and three display pages.
 `lastBackupAt` is written by `photos verify` and drives the staleness warning
 in section 8.
 
-### `data/page-NNNN.json`
+### `data/months/YYYY-MM.json`
+
+One shard per calendar month, ~150 records and ~80 KB at the expected rate.
+
+**A photo's month is its local capture date**, taken from the offset in
+`takenAt`, not from UTC. A photo shot at 19:00 on 31 March at -06:00 belongs to
+March, though it is 01:00 on 1 April in UTC. Getting this wrong silently files
+evening photos into the following month.
 
 ```json
 {
   "schemaVersion": 1,
-  "page": 1,
+  "month": "2026-03",
   "photos": [
     {
       "id": "2026-03-14-big-bend-0031",
@@ -176,6 +191,7 @@ in section 8.
       "caption": "The canyon mouth from the river trail, twenty minutes after sunset.",
       "location": "Big Bend National Park, Texas",
       "takenAt": "2026-03-14T18:22:05-06:00",
+      "featured": true,
       "web":   { "path": "web/2026-03-14-big-bend-0031-2048.a1b2c3d4.jpg",
                  "w": 2048, "h": 1365, "bytes": 812446 },
       "thumb": { "path": "web/2026-03-14-big-bend-0031-640.e5f6a7b8.jpg",
@@ -208,9 +224,31 @@ in section 8.
 - `location` is free text the photographer types. It is public.
 - `exif` is a fixed whitelist of six fields. Everything else in the source
   EXIF is discarded, including GPS unless `--keep-gps` is passed.
+- `featured` is optional and defaults to false. It is the only editorial
+  signal in the model, set by `photos feature` and read by the home page.
 - `lqip` is a ~400-byte blurred JPEG data URI, inline to avoid a request.
 - `sha256` is of the **plaintext** original, so a viewer can verify a decrypted
   download end to end.
+
+### `data/featured.json`
+
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-21T14:02:11Z",
+  "photos": [ { "…": "full photo records, newest first" } ]
+}
+```
+
+Full records, copied rather than referenced, so the home page renders from one
+fetch without resolving ids across month shards. It is regenerated from the
+`featured` flags whenever any of them changes, which makes the duplication
+safe: the flag in the month shard is the source of truth and this file is a
+derived cache.
+
+Expected to hold tens of photos, not hundreds. If it ever grows past a few
+hundred it should shard like the months do, but at a handful of features a week
+that is years away.
 
 ### `data/keys.json`
 
@@ -320,10 +358,12 @@ backup requirements in section 8 are not optional.
 | `photos add <files…>` | Prompts per file for title, caption, location; extracts EXIF; builds derivatives; encrypts the original; wraps its key, and publishes — all in one run |
 | `photos edit <id>` | Amends title, caption, or location in place |
 | `photos rm <id>` | Removes the record, its key entry, and its objects |
+| `photos feature <id…>` | Marks photos for the home page and regenerates `featured.json` |
+| `photos unfeature <id…>` | Clears the flag and regenerates `featured.json` |
 | `photos publish` | Re-uploads any object the manifest references but S3 is missing, and invalidates `data/*` and `index.html`. Repairs an interrupted run; a no-op otherwise |
 | `photos deploy-site` | Builds `site/` and uploads `assets/`, `index.html`, `robots.txt` |
 | `photos rotate-password` | Re-wraps every data key under a new password |
-| `photos reindex` | Rebuilds page shards, applying the current page size |
+| `photos reindex` | Rebuilds every month shard, `index.json`, and `featured.json` from scratch; repairs a corrupted or hand-edited index |
 | `photos verify` | Checks manifest, keys, and S3 agree; round-trip decrypts a sample; warns on a stale backup |
 | `photos gc` | Lists objects no manifest references and offers to delete them |
 | `photos restore --manifest` | Rolls `data/` back to a previous S3 object version |
@@ -343,8 +383,9 @@ Within a run, in this order:
 
 1. Derivatives and the encrypted original (inert; nothing references them yet)
 2. `data/keys.json` (a wrapped key for an unreferenced photo is harmless)
-3. The page shard
-4. `data/index.json`
+3. The affected month shard
+4. `data/featured.json`, if the photo is featured
+5. `data/index.json`
 
 Each is a single atomic S3 PUT. An interruption at any point leaves the live
 site exactly as it was, plus orphaned bytes that `photos gc` reclaims. There is
@@ -398,26 +439,23 @@ Diffbot, ImagesiftBot, and Omgilibot. Ordinary search indexing is left allowed.
   "creator": "William Kubenka",
   "copyright": "© 2026 William Kubenka. All rights reserved.",
   "usageTerms": "No reproduction, redistribution, or use as AI training data without written permission.",
-  "sizes": { "display": 2048, "thumb": 640 },
-  "pageSize": 60,
-  "shardSize": 300,
-  "shardThreshold": 300
+  "sizes": { "display": 2048, "thumb": 640 }
 }
 ```
 
-Below `shardThreshold` photos the library stays a single shard file. At or
-above it, `reindex` splits the library into shards of `shardSize` records. The
-site does not care which, because it reads the shard list from `index.json` and
-paginates the display by `pageSize` independently.
+There is no page-size or shard-size setting. The shard boundary is the calendar
+month, which needs no tuning and cannot drift out of step between the CLI and
+the site.
 
 ## 7. The site
 
 ### Modules
 
-- `library.ts` — fetches `index.json`, exposes `getPage(n)` and `getPhoto(id)`,
-  and hides whether the library is one shard file or twenty. It reads the shard
-  list from `index.json` and slices display pages of `pageSize` out of it. This
-  is the seam that makes sharding a contained change.
+- `library.ts` — fetches `index.json`, then exposes `getMonths()`,
+  `getMonth(m)`, `getFeatured()`, and `getPhoto(id)`. It caches fetched shards
+  in memory, so moving between months and back costs one request each. This is
+  the seam that would absorb a switch to continuous scrolling later, since a
+  scrubber consumes the same month list.
 - `gallery.ts` — grid rendering, lightbox, keyboard and swipe navigation, URL
   state.
 - `unlock.ts` — password entry, key derivation, decryption, and the locked and
@@ -428,8 +466,22 @@ paginates the display by `pageSize` independently.
 
 Thumbnails render over their inline LQIP with explicit `width` and `height`
 so nothing shifts as images arrive, and `loading="lazy"` below the fold.
-Pagination state lives in the URL as `?page=N`, so browser history and a
-pasted link both work. The next page's JSON prefetches on idle.
+Navigation state lives in the URL as `?m=2026-03`, so browser history and a
+pasted link both work and keep working as the library grows. The adjacent
+months prefetch on idle.
+
+### Navigation
+
+The home page is the curated set from `featured.json`, with a prominent
+"Browse all" into the archive. The archive shows one month at a time under a
+rail of years that expand into their months with counts, built entirely from
+`index.json`. Previous and next month controls sit at the top and bottom of
+each grid.
+
+A heavy month — a trip that yields 400 photos — renders as one grid rather
+than sub-paginating. Lazy loading plus `content-visibility: auto` on the grid
+rows keeps that affordable, and it avoids introducing a second, unstable
+numbering inside a month.
 
 ### Lightbox
 
@@ -548,13 +600,20 @@ a curious visitor reading the network tab.
 - Write ordering: a simulated failure at each step leaves the live manifest
   consistent.
 - `gc` identifies exactly the orphans and nothing referenced.
-- Sharding math: shard boundaries, `reindex` idempotence, and insertion of an
-  older photo landing in the correct shard.
+- Month assignment from `takenAt`: a photo at 19:00 on the last day of a month
+  at a negative UTC offset files into that month, not the next. The same for a
+  positive offset at 01:00 on the first day.
+- `reindex` is idempotent, and rebuilds an index that matches one built
+  incrementally by repeated `add` calls.
+- Adding a photo touches exactly one month shard.
+- `feature` and `unfeature` keep the flag in the month shard and the contents of
+  `featured.json` in agreement.
 
 **`site/` (vitest with jsdom):**
 
-- Library loader over a single shard and over many, through the same
-  interface, including a display page that spans a shard boundary.
+- Library loader across months, including caching (a re-visited month refetches
+  nothing) and a month absent from the index.
+- Featured loader when `featured.json` is empty.
 - URL state round trips for page and photo.
 - The unlock state machine: locked, deriving, wrong password, unlocked,
   decrypting, failed.
@@ -574,6 +633,12 @@ Not in this project; noted so the design does not foreclose them.
 - Multiple passwords for revoking one person without disturbing others. Same
   mechanism.
 - Search and tag filtering.
-- Sharding is designed for but not built; `shardThreshold` triggers it and the
-  loader interface absorbs it.
+- Shoots or sessions: grouping photos taken within a few hours into a named
+  outing. It overlaps with month navigation enough to wait until the site has
+  been lived with.
+- A continuously scrolling timeline with a month scrubber. Deliberately not
+  built: it is the most code and the most ways to be subtly wrong (scroll
+  virtualization, restoring position on back-navigation, URL sync). Month
+  shards make it an upgrade rather than a rewrite, because a scrubber consumes
+  the same `index.json` month list the rail does.
 - An RSS or JSON feed of new photos.
