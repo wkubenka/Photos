@@ -360,7 +360,8 @@ backup requirements in section 8 are not optional.
 
 | Command | Behavior |
 |---|---|
-| `photos add <files…>` | Prompts per file for title, caption, location; extracts EXIF; builds derivatives; encrypts the original; wraps its key, and publishes — all in one run |
+| `photos add <files…>` | Prompts per file for title and caption; extracts EXIF; builds derivatives; encrypts the original; wraps its key, and publishes — all in one run. `--location` applies one location to the whole batch instead of prompting per file |
+| `photos ls [month]` | Lists id, date, title, and featured state, for one month or the whole library. `--featured` narrows to the curated set |
 | `photos edit <id>` | Amends title, caption, or location in place, regenerating `featured.json` if the photo is featured |
 | `photos rm <id>` | Removes the record, its key entry, and its objects |
 | `photos feature <id…>` | Marks photos for the home page and regenerates `featured.json` |
@@ -368,15 +369,23 @@ backup requirements in section 8 are not optional.
 | `photos publish` | Re-uploads any object the manifest references but S3 is missing, and invalidates `data/*` and `index.html`. Repairs an interrupted run; a no-op otherwise |
 | `photos deploy-site` | Builds `site/` and uploads `assets/`, `index.html`, `robots.txt` |
 | `photos rotate-password` | Re-wraps every data key under a new password |
-| `photos reindex` | Rebuilds every month shard, `index.json`, and `featured.json` from scratch; repairs a corrupted or hand-edited index |
+| `photos repair` | Rebuilds every month shard, `index.json`, and `featured.json` from the photo records S3 already holds; refiles any photo sitting in the wrong month |
 | `photos verify` | Checks manifest, keys, and S3 agree; round-trip decrypts a sample; warns on a stale backup |
-| `photos gc` | Lists objects no manifest references and offers to delete them |
-| `photos restore --manifest` | Rolls `data/` back to a previous S3 object version |
+| `photos gc` | Lists objects no manifest references — derivatives, encrypted originals, and month shards that dropped out of the index — and offers to delete them |
+| `photos restore <path> [version]` | Rolls one `data/` file back to a previous S3 object version |
 
 Because there is no local state, there is nowhere for a half-finished `add` to
 wait. `add` therefore runs to completion or leaves the site untouched, per the
 write ordering below, and `publish` is the repair command rather than a
 deferred second step.
+
+Because every curation command takes a photo id, and ids are only printed when
+a photo is added, `ls` is what makes the rest usable at this volume. Nobody
+recalls the id of something they published three weeks ago.
+
+`restore` names a file rather than assuming the index, because the manifest is
+four files now and the one most worth rolling back is usually a month shard,
+not the table of contents.
 
 `add`, `rm`, and `rotate-password` need the password to wrap or unwrap keys.
 The CLI prompts without echo, or reads `PHOTOS_PASSWORD`. It is never written
@@ -539,7 +548,7 @@ These are setup tasks in the implementation plan, not optional hardening.
 1. **S3 bucket** with all public access blocked and no website endpoint.
 2. **Bucket versioning enabled.** S3 now holds the only copy of the originals.
    Versioning turns an overwritten manifest or a mistaken delete into a
-   one-command recovery, and is what `photos restore --manifest` depends on.
+   one-command recovery, and is what `photos restore <path>` depends on.
 3. **Lifecycle rule** expiring noncurrent versions after 90 days, so
    versioning does not grow without bound.
 4. **CloudFront distribution** with Origin Access Control, the two cache

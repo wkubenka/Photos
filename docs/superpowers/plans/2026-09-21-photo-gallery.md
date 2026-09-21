@@ -211,6 +211,7 @@ git commit -m "chore: scaffold npm workspaces with core package and vitest"
   - `utf8(s: string): Uint8Array`, `concat(...parts: Uint8Array[]): Uint8Array`
   - `u32be(n: number): Uint8Array`, `u64be(n: number): Uint8Array`
   - `monthOf(takenAt: string): string` returning `"YYYY-MM"`
+  - `localDateOf(takenAt: string): string` returning `"YYYY-MM-DD"`
   - `slugify(s: string): string`
   - `makePhotoId(takenAt: string, title: string, frame: string): string`
 
@@ -2999,8 +3000,10 @@ git commit -m "feat(cli): centralise manifest reads and ordered commits"
 - Consumes: Tasks 10–14, plus `encryptOriginal`, `newDataKey`, `wrapDataKey`, `makeVerifier`, `deriveMasterKey`, `newKdfParams`, `makePhotoId`, `monthOf` from core.
 - Produces:
   - `addPhotos(deps: AddDeps, files: string[], opts: AddOptions): Promise<Photo[]>`
-  - `interface AddDeps { store: Store; config: Config; prompt: (file: string, exif: ExtractedExif) => Promise<{ title: string; caption: string; location: string }>; password: () => Promise<string> }`
-  - `interface AddOptions { keepGps?: boolean; offset?: string }`
+  - `interface AddDeps { store: Store; config: Config; prompt: (file: string, exif: ExtractedExif, askLocation: boolean) => Promise<{ title: string; caption: string; location?: string }>; password: () => Promise<string> }`
+  - `interface AddOptions { keepGps?: boolean; offset?: string; location?: string }`
+
+`--location` supplies one location for the whole batch, which is the common case: a day's shoot happens in one place, and typing it five times is friction for no information. When it is supplied the prompt is not asked for it at all.
 
 Dependency injection on `prompt` and `password` is what makes this testable without a TTY.
 
@@ -3008,7 +3011,7 @@ Dependency injection on `prompt` and `password` is what makes this testable with
 
 ```ts
 // cli/test/add.test.ts
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, afterAll, vi } from "vitest";
 import sharp from "sharp";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -3103,6 +3106,32 @@ describe("addPhotos", () => {
       .rejects.toThrow(/password/i);
   }, 90_000);
 
+  it("applies a batch location without prompting for one", async () => {
+    const prompt = vi.fn(async () => ({ title: "Santa Elena at dusk", caption: "Dusk." }));
+    const d = { ...deps(), prompt };
+    const [photo] = await addPhotos(d, [await sourceFile()], {
+      offset: "-06:00", location: "Big Bend NP, Texas",
+    });
+    expect(photo!.location).toBe("Big Bend NP, Texas");
+    expect(prompt).toHaveBeenCalledWith(expect.any(String), expect.anything(), false);
+  }, 60_000);
+
+  it("applies the batch location to every file in the batch", async () => {
+    const d = { ...deps(), prompt: async () => ({ title: "T", caption: "C" }) };
+    const added = await addPhotos(d, [await sourceFile("a.jpg"), await sourceFile("b.jpg")], {
+      offset: "-06:00", location: "Guadalupe Mountains",
+    });
+    expect(added.map((p) => p.location)).toEqual(["Guadalupe Mountains", "Guadalupe Mountains"]);
+  }, 90_000);
+
+  it("asks for a location when no batch location is given", async () => {
+    const prompt = vi.fn(async () => ({ title: "T", caption: "C", location: "Typed in" }));
+    const d = { ...deps(), prompt };
+    const [photo] = await addPhotos(d, [await sourceFile()], { offset: "-06:00" });
+    expect(photo!.location).toBe("Typed in");
+    expect(prompt).toHaveBeenCalledWith(expect.any(String), expect.anything(), true);
+  }, 60_000);
+
   it("writes an empty featured file when nothing is featured", async () => {
     const d = deps();
     await addPhotos(d, [await sourceFile()], { offset: "-06:00" });
@@ -3166,13 +3195,19 @@ import {
 export interface AddDeps {
   store: Store;
   config: Config;
-  prompt: (file: string, exif: ExtractedExif) => Promise<{ title: string; caption: string; location: string }>;
+  prompt: (
+    file: string,
+    exif: ExtractedExif,
+    askLocation: boolean,
+  ) => Promise<{ title: string; caption: string; location?: string }>;
   password: () => Promise<string>;
 }
 
 export interface AddOptions {
   keepGps?: boolean;
   offset?: string;
+  /** One location for the whole batch; when set, the prompt does not ask for it. */
+  location?: string;
 }
 
 export async function addPhotos(
@@ -3212,7 +3247,8 @@ export async function addPhotos(
   for (const file of files) {
     const source = await readFile(file);
     const extracted = await readExif(file, opts.offset);
-    const answers = await deps.prompt(file, extracted);
+    const answers = await deps.prompt(file, extracted, opts.location === undefined);
+    const location = opts.location ?? answers.location ?? "";
 
     const id = makePhotoId(extracted.takenAt, answers.title, extracted.frame);
     const month = monthOf(extracted.takenAt);
@@ -3245,7 +3281,7 @@ export async function addPhotos(
       id,
       title: answers.title,
       caption: answers.caption,
-      location: answers.location,
+      location,
       takenAt: extracted.takenAt,
       featured: false,
       web: { path: webPath, w: display.w, h: display.h, bytes: displayJpeg.length },
@@ -3283,7 +3319,7 @@ export async function addPhotos(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npm test cli/test/add.test.ts`
-Expected: PASS, 5 tests. The decrypt-back-to-source test is the one that proves writer and reader agree.
+Expected: PASS, 8 tests. The decrypt-back-to-source test is the one that proves writer and reader agree.
 
 - [ ] **Step 5: Commit**
 
@@ -3546,7 +3582,7 @@ git commit -m "feat(cli): curate photos with feature, edit, and remove"
 
 ---
 
-## Task 17: `publish`, `gc`, and `reindex`
+## Task 17: `publish`, `ls`, `gc`, and `repair`
 
 **Files:**
 - Create: `cli/src/commands/maintain.ts`
@@ -3556,11 +3592,18 @@ git commit -m "feat(cli): curate photos with feature, edit, and remove"
 - Consumes: Tasks 10, 14, 16.
 - Produces:
   - `publish(store, cdn: Cdn): Promise<{ missing: string[] }>` — reports manifest-referenced objects S3 does not have, then invalidates
+  - `listPhotos(store, opts?: { month?: string; featuredOnly?: boolean }): Promise<PhotoSummary[]>`
+  - `interface PhotoSummary { id: string; date: string; title: string; featured: boolean; month: string }`
+  - `formatList(rows: PhotoSummary[]): string`
   - `collectGarbage(store): Promise<string[]>` — returns unreferenced object keys without deleting
   - `deleteGarbage(store, keys: string[]): Promise<void>`
-  - `reindex(store): Promise<IndexFile>` — rebuilds every shard, the index, and featured from the photos S3 already holds
+  - `repair(store): Promise<IndexFile>` — rebuilds every shard, the index, and featured from the photos S3 already holds
 
-`reindex` reads the month shards named by the index, then re-derives each photo's month from its own `takenAt`, which is what lets it repair a shard a photo was filed into incorrectly.
+`repair` reads the month shards named by the index, then re-derives each photo's month from its own `takenAt`, which is what lets it refile a photo that landed in the wrong shard. It is named for what it does: there is no page-size setting to re-apply, because the calendar decides shard boundaries.
+
+`listPhotos` exists because every curation command takes an id, and ids are printed exactly once — when the photo is added. Without it, featuring something from three weeks ago means reading a shard by hand.
+
+`collectGarbage` also sweeps `data/months/` for shards that dropped out of the index, which happens whenever the last photo in a month is removed. It refuses to propose a shard that still contains photo records, so a stale index can never cause records to be deleted.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3568,13 +3611,15 @@ git commit -m "feat(cli): curate photos with feature, edit, and remove"
 // cli/test/maintain.test.ts
 import { describe, it, expect, beforeEach } from "vitest";
 import { createMemoryStore } from "../src/memory-store.js";
-import { publish, collectGarbage, deleteGarbage, reindex } from "../src/commands/maintain.js";
+import {
+  publish, listPhotos, formatList, collectGarbage, deleteGarbage, repair,
+} from "../src/commands/maintain.js";
 import { KEYS, commit, rebuildFeatured, rebuildIndex, readIndex, readMonth } from "../src/manifest.js";
 import { SCHEMA_VERSION, type MonthFile, type Photo } from "@photos/core";
 
-function photo(id: string, takenAt: string): Photo {
+function photo(id: string, takenAt: string, featured = false): Photo {
   return {
-    id, title: id, caption: "", location: "", takenAt, featured: false,
+    id, title: `Title ${id}`, caption: "", location: "", takenAt, featured,
     web: { path: `web/${id}-2048.aaaaaaaa.jpg`, w: 2048, h: 1365, bytes: 100 },
     thumb: { path: `web/${id}-640.bbbbbbbb.jpg`, w: 640, h: 427, bytes: 10 },
     lqip: "data:image/jpeg;base64,aa",
@@ -3617,6 +3662,48 @@ describe("publish", () => {
   });
 });
 
+describe("listPhotos", () => {
+  const seeded = () => seed([
+    { schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-03-14T10:00:00-06:00", true)] },
+    { schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [
+      photo("b", "2026-08-01T10:00:00-06:00"), photo("c", "2026-08-02T10:00:00-06:00")] },
+  ]);
+
+  it("lists the whole library newest first", async () => {
+    await seeded();
+    expect((await listPhotos(store)).map((r) => r.id)).toEqual(["c", "b", "a"]);
+  });
+
+  it("carries the local date, title, and featured state", async () => {
+    await seeded();
+    const row = (await listPhotos(store)).find((r) => r.id === "a")!;
+    expect(row).toEqual({ id: "a", date: "2026-03-14", title: "Title a", featured: true, month: "2026-03" });
+  });
+
+  it("narrows to one month", async () => {
+    await seeded();
+    expect((await listPhotos(store, { month: "2026-08" })).map((r) => r.id)).toEqual(["c", "b"]);
+  });
+
+  it("narrows to the featured set", async () => {
+    await seeded();
+    expect((await listPhotos(store, { featuredOnly: true })).map((r) => r.id)).toEqual(["a"]);
+  });
+
+  it("returns nothing for a month with no photos", async () => {
+    await seeded();
+    expect(await listPhotos(store, { month: "2030-01" })).toEqual([]);
+  });
+
+  it("formats a copyable line per photo, marking featured ones", async () => {
+    await seeded();
+    const text = formatList(await listPhotos(store));
+    expect(text.split("\n")).toHaveLength(3);
+    expect(text).toContain("a");
+    expect(text).toMatch(/★.*Title a/);
+  });
+});
+
 describe("garbage collection", () => {
   it("finds unreferenced objects and leaves referenced ones alone", async () => {
     await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-03-14T10:00:00-06:00")] }]);
@@ -3631,19 +3718,46 @@ describe("garbage collection", () => {
     expect(await store.get("orig/a.enc")).not.toBeNull();
   });
 
-  it("never proposes deleting a data file or a site asset", async () => {
+  it("never proposes deleting a data file, a live shard, or a site asset", async () => {
     await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-03-14T10:00:00-06:00")] }]);
     await store.put("index.html", new Uint8Array([1]), "text/html", "x");
     await store.put("assets/main.abc.js", new Uint8Array([1]), "text/javascript", "x");
     expect(await collectGarbage(store)).toEqual([]);
   });
+
+  it("collects a month shard that dropped out of the index", async () => {
+    // 2026-03 is emptied, so rebuildIndex drops it while the object remains.
+    await seed([
+      { schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [] },
+      { schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [photo("b", "2026-08-01T10:00:00-06:00")] },
+    ]);
+    expect(await collectGarbage(store)).toContain("data/months/2026-03.json");
+  });
+
+  it("refuses to collect an unindexed shard that still holds photo records", async () => {
+    await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [photo("b", "2026-08-01T10:00:00-06:00")] }]);
+    // A shard the index has lost track of, but which still contains a photo.
+    await store.put(
+      "data/months/2026-03.json",
+      new TextEncoder().encode(JSON.stringify({
+        schemaVersion: SCHEMA_VERSION, month: "2026-03",
+        photos: [photo("a", "2026-03-14T10:00:00-06:00")],
+      })),
+      "application/json", "x",
+    );
+    expect(await collectGarbage(store)).not.toContain("data/months/2026-03.json");
+  });
+
+  it("refuses to delete outside the prefixes it owns", async () => {
+    await expect(deleteGarbage(store, ["data/index.json"])).rejects.toThrow(/refusing/);
+  });
 });
 
-describe("reindex", () => {
+describe("repair", () => {
   it("is idempotent", async () => {
     await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-03-14T10:00:00-06:00")] }]);
-    const first = await reindex(store);
-    const second = await reindex(store);
+    const first = await repair(store);
+    const second = await repair(store);
     expect(second.months).toEqual(first.months);
     expect(second.photoCount).toBe(1);
   });
@@ -3651,7 +3765,7 @@ describe("reindex", () => {
   it("refiles a photo that is in the wrong month shard", async () => {
     // "a" belongs to 2026-08 by its takenAt but is filed under 2026-03.
     await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-08-02T10:00:00-06:00")] }]);
-    const index = await reindex(store);
+    const index = await repair(store);
     expect(index.months.map((m) => m.month)).toEqual(["2026-08"]);
     expect((await readMonth(store, "2026-08")).photos[0]!.id).toBe("a");
     expect((await readMonth(store, "2026-03")).photos).toEqual([]);
@@ -3664,7 +3778,7 @@ describe("reindex", () => {
     ];
     await seed(months);
     const incremental = await readIndex(store);
-    const rebuilt = await reindex(store);
+    const rebuilt = await repair(store);
     expect(rebuilt.months).toEqual(incremental.months);
   });
 });
@@ -3679,7 +3793,10 @@ Expected: FAIL — `Cannot find module '../src/commands/maintain.js'`.
 
 ```ts
 // cli/src/commands/maintain.ts
-import { monthOf, SCHEMA_VERSION, type IndexFile, type MonthFile } from "@photos/core";
+import {
+  MonthFileSchema, localDateOf, monthOf, SCHEMA_VERSION,
+  type IndexFile, type MonthFile,
+} from "@photos/core";
 import type { Cdn, Store } from "../store.js";
 import {
   KEYS, commit, readAllMonths, readIndex, rebuildFeatured, rebuildIndex,
@@ -3710,24 +3827,88 @@ export async function publish(store: Store, cdn: Cdn): Promise<{ missing: string
   return { missing: missing.sort() };
 }
 
-/** Only web/ and orig/ are ever candidates. data/, index.html, and assets/ are off limits. */
+export interface PhotoSummary {
+  id: string;
+  date: string;
+  title: string;
+  featured: boolean;
+  month: string;
+}
+
+export async function listPhotos(
+  store: Store,
+  opts: { month?: string; featuredOnly?: boolean } = {},
+): Promise<PhotoSummary[]> {
+  const index = await readIndex(store);
+  const wanted = opts.month
+    ? index.months.filter((m) => m.month === opts.month)
+    : index.months;
+  const months = await readAllMonths(store, { ...index, months: wanted });
+
+  return months
+    .flatMap((m) =>
+      m.photos
+        .filter((p) => !opts.featuredOnly || p.featured)
+        .map((p) => ({
+          id: p.id,
+          date: localDateOf(p.takenAt),
+          title: p.title,
+          featured: p.featured,
+          month: m.month,
+        })),
+    )
+    .sort((a, b) => (a.date === b.date ? (a.id < b.id ? 1 : -1) : a.date < b.date ? 1 : -1));
+}
+
+export function formatList(rows: PhotoSummary[]): string {
+  const width = rows.reduce((n, r) => Math.max(n, r.id.length), 0);
+  return rows
+    .map((r) => `${r.featured ? "★" : " "} ${r.id.padEnd(width)}  ${r.date}  ${r.title}`)
+    .join("\n");
+}
+
+const COLLECTABLE_PREFIXES = ["web/", "orig/", "data/months/"];
+
+/**
+ * Candidates are derivatives, encrypted originals, and month shards the index
+ * no longer lists. A shard that still holds photo records is never proposed,
+ * so a stale index cannot turn into lost records.
+ */
 export async function collectGarbage(store: Store): Promise<string[]> {
   const index = await readIndex(store);
   const referenced = referencedKeys(await readAllMonths(store, index));
-  const candidates = [...(await store.list("web/")), ...(await store.list("orig/"))];
-  return candidates.filter((k) => !referenced.has(k)).sort();
+  const liveShards = new Set(index.months.map((m) => m.path));
+
+  const assets = [...(await store.list("web/")), ...(await store.list("orig/"))]
+    .filter((k) => !referenced.has(k));
+
+  const staleShards: string[] = [];
+  for (const key of await store.list("data/months/")) {
+    if (liveShards.has(key)) continue;
+    const body = await store.get(key);
+    if (!body) continue;
+    try {
+      const shard = MonthFileSchema.parse(JSON.parse(new TextDecoder().decode(body)));
+      if (shard.photos.length === 0) staleShards.push(key);
+    } catch {
+      // Unparseable and unreferenced: safe to reclaim.
+      staleShards.push(key);
+    }
+  }
+
+  return [...assets, ...staleShards].sort();
 }
 
 export async function deleteGarbage(store: Store, keys: string[]): Promise<void> {
   for (const key of keys) {
-    if (!key.startsWith("web/") && !key.startsWith("orig/")) {
-      throw new Error(`refusing to delete outside web/ and orig/: ${key}`);
+    if (!COLLECTABLE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      throw new Error(`refusing to delete outside ${COLLECTABLE_PREFIXES.join(", ")}: ${key}`);
     }
     await store.delete(key);
   }
 }
 
-export async function reindex(store: Store): Promise<IndexFile> {
+export async function repair(store: Store): Promise<IndexFile> {
   const previous = await readIndex(store);
   const previousMonths = await readAllMonths(store, previous);
   const photos = previousMonths.flatMap((m) => m.photos);
@@ -3754,13 +3935,13 @@ export async function reindex(store: Store): Promise<IndexFile> {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npm test cli/test/maintain.test.ts`
-Expected: PASS, 7 tests.
+Expected: PASS, 16 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add cli/src/commands/maintain.ts cli/test/maintain.test.ts
-git commit -m "feat(cli): add publish repair, garbage collection, and reindex"
+git commit -m "feat(cli): add publish, ls, garbage collection, and repair"
 ```
 
 ---
@@ -3775,7 +3956,7 @@ git commit -m "feat(cli): add publish repair, garbage collection, and reindex"
 - Consumes: Tasks 10, 14; core key functions.
 - Produces:
   - `rotatePassword(store, oldPassword: string, newPassword: string): Promise<{ rewrapped: number }>`
-  - `restoreManifest(store, versionId?: string): Promise<void>`
+  - `restoreFile(store, path: string, versionId?: string): Promise<void>`
   - `verifyLibrary(deps: { store: Store; password?: string }): Promise<VerifyReport>`
   - `interface VerifyReport { photoCount: number; missingObjects: string[]; missingKeys: string[]; orphanKeys: string[]; featuredDrift: string[]; monthMismatches: string[]; backupAgeDays: number | null; sampleDecrypted: boolean | null; ok: boolean }`
   - `formatReport(report: VerifyReport): string`
@@ -3855,6 +4036,35 @@ describe("rotatePassword", () => {
     const before = (await readKeys(store))!;
     await expect(rotatePassword(store, "wrong", "new passphrase")).rejects.toThrow(/password/i);
     expect(await readKeys(store)).toEqual(before);
+  });
+
+  it("restores a month shard, not just the index", async () => {
+    const store = createMemoryStore();
+    const { restoreFile } = await import("../src/commands/keys.js");
+    const shard = (title: string) => new TextEncoder().encode(JSON.stringify({
+      schemaVersion: SCHEMA_VERSION, month: "2026-03",
+      photos: [{
+        id: "a", title, caption: "", location: "", takenAt: "2026-03-14T10:00:00-06:00", featured: false,
+        web: { path: "web/a-2048.aaaaaaaa.jpg", w: 2048, h: 1365, bytes: 100 },
+        thumb: { path: "web/a-640.bbbbbbbb.jpg", w: 640, h: 427, bytes: 10 },
+        lqip: "data:image/jpeg;base64,aa",
+        exif: { camera: "c", lens: "l", focalLength: "23mm", aperture: "f/8", shutter: "1/60", iso: 400 },
+        original: { path: "orig/a.enc", bytes: 1000, mime: "image/jpeg", sha256: "ab", chunkSize: 4194304, chunkCount: 1 },
+      }],
+    }));
+
+    await store.put("data/months/2026-03.json", shard("the good title"), "application/json", "x");
+    await store.put("data/months/2026-03.json", shard("an accidental edit"), "application/json", "x");
+
+    await restoreFile(store, "data/months/2026-03.json");
+    const back = JSON.parse(new TextDecoder().decode((await store.get("data/months/2026-03.json"))!));
+    expect(back.photos[0].title).toBe("the good title");
+  });
+
+  it("refuses to restore something outside data/", async () => {
+    const store = createMemoryStore();
+    const { restoreFile } = await import("../src/commands/keys.js");
+    await expect(restoreFile(store, "orig/a.enc")).rejects.toThrow(/only restore/);
   });
 
   it("never rewrites an encrypted original", async () => {
@@ -4014,7 +4224,7 @@ Expected: FAIL — modules not found.
 // cli/src/commands/keys.ts
 import {
   checkVerifier, deriveMasterKey, makeVerifier, newKdfParams, unwrapDataKey, wrapDataKey,
-  IndexFileSchema, type KeysFile,
+  FeaturedFileSchema, IndexFileSchema, KeysFileSchema, MonthFileSchema, type KeysFile,
 } from "@photos/core";
 import { CACHE_SHORT } from "../config.js";
 import { KEYS, readKeys } from "../manifest.js";
@@ -4059,14 +4269,48 @@ export async function rotatePassword(
   return { rewrapped: Object.keys(rewrapped).length };
 }
 
-/** Roll data/index.json back to a previous S3 object version. */
-export async function restoreManifest(store: Store, versionId?: string): Promise<void> {
-  const versions = await store.listVersions(KEYS.index);
-  if (versions.length < 2) throw new Error("no previous version of data/index.json to restore");
+const RESTORABLE = new Set([KEYS.index, KEYS.keys, KEYS.featured]);
+
+function validatorFor(path: string): (value: unknown) => unknown {
+  if (path === KEYS.index) return (v) => IndexFileSchema.parse(v);
+  if (path === KEYS.keys) return (v) => KeysFileSchema.parse(v);
+  if (path === KEYS.featured) return (v) => FeaturedFileSchema.parse(v);
+  return (v) => MonthFileSchema.parse(v);
+}
+
+/**
+ * Rolls one data/ file back to a previous S3 object version.
+ *
+ * It names a file rather than assuming the index, because the manifest is four
+ * kinds of file and the one worth rolling back is usually a month shard. The
+ * restored bytes are validated against that file's schema before being written,
+ * so a corrupted old version cannot be promoted back into service.
+ */
+export async function restoreFile(
+  store: Store,
+  path: string,
+  versionId?: string,
+): Promise<void> {
+  if (!RESTORABLE.has(path) && !path.startsWith("data/months/")) {
+    throw new Error(`can only restore data/ manifest files, not ${path}`);
+  }
+
+  const versions = await store.listVersions(path);
+  if (versions.length < 2 && !versionId) {
+    throw new Error(`no previous version of ${path} to restore`);
+  }
+
   const target = versionId ?? versions[1]!.versionId;
-  const body = await store.getVersion(KEYS.index, target);
-  IndexFileSchema.parse(JSON.parse(new TextDecoder().decode(body)));
-  await store.put(KEYS.index, body, "application/json", CACHE_SHORT);
+  const body = await store.getVersion(path, target);
+  validatorFor(path)(JSON.parse(new TextDecoder().decode(body)));
+  await store.put(path, body, "application/json", CACHE_SHORT);
+}
+
+export async function listFileVersions(
+  store: Store,
+  path: string,
+): Promise<{ versionId: string; lastModified: string }[]> {
+  return store.listVersions(path);
 }
 ```
 
@@ -4205,7 +4449,7 @@ export function formatReport(report: VerifyReport): string {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npm test cli/test/rotate.test.ts cli/test/verify.test.ts`
-Expected: PASS, 13 tests.
+Expected: PASS, 15 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -4435,8 +4679,10 @@ import { createCloudFrontCdn, createS3Store } from "./store.js";
 import { promptPassword } from "./password.js";
 import { addPhotos } from "./commands/add.js";
 import { editPhoto, removePhoto, setFeatured } from "./commands/curate.js";
-import { collectGarbage, deleteGarbage, publish, reindex } from "./commands/maintain.js";
-import { restoreManifest, rotatePassword } from "./commands/keys.js";
+import {
+  collectGarbage, deleteGarbage, formatList, listPhotos, publish, repair,
+} from "./commands/maintain.js";
+import { listFileVersions, restoreFile, rotatePassword } from "./commands/keys.js";
 import { formatReport, recordBackup, verifyLibrary } from "./commands/verify.js";
 import { uploadSite } from "./commands/deploy.js";
 import { closeExif, type ExtractedExif } from "./exif.js";
@@ -4444,30 +4690,32 @@ import { parseArgs } from "./args.js";
 
 const USAGE = `photos <command>
 
-  add <files...> [--keep-gps] [--offset ±HH:MM]   ingest, encrypt, and publish
+  add <files...> [--location "Big Bend NP"] [--keep-gps] [--offset ±HH:MM]
+                              ingest, encrypt, and publish. --location applies
+                              to the whole batch instead of prompting per file
+  ls [month] [--featured]     list ids, dates, and titles (★ marks featured)
   edit <id> [--title t] [--caption c] [--location l]
   rm <id>
   feature <ids...>            mark photos for the home page
   unfeature <ids...>
-  publish                     repair missing uploads and invalidate the CDN
+  publish                     re-upload anything missing and invalidate the CDN
   deploy-site [dir]           upload site/dist (default: site/dist)
-  reindex                     rebuild shards, index, and featured
+  repair                      rebuild shards, index, and featured from S3
   verify [--decrypt-sample]   check the library is consistent
-  gc                          list and optionally delete unreferenced objects
+  gc [--yes]                  list and optionally delete unreferenced objects
   rotate-password             re-wrap every data key under a new password
-  restore-manifest [version]  roll data/index.json back
+  restore <data/path> [ver]   roll one manifest file back a version
   record-backup               stamp today as the last backup date
 `;
 
-async function askPhoto(file: string, exif: ExtractedExif) {
+async function askPhoto(file: string, exif: ExtractedExif, askLocation: boolean) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     process.stdout.write(`\n${file}  (${exif.takenAt}, ${exif.exif.camera})\n`);
-    return {
-      title: await rl.question("  Title: "),
-      caption: await rl.question("  Caption: "),
-      location: await rl.question("  Location: "),
-    };
+    const title = await rl.question("  Title: ");
+    const caption = await rl.question("  Caption: ");
+    if (!askLocation) return { title, caption };
+    return { title, caption, location: await rl.question("  Location: ") };
   } finally {
     rl.close();
   }
@@ -4490,10 +4738,23 @@ async function main(): Promise<number> {
       const added = await addPhotos(
         { store, config, prompt: askPhoto, password: () => promptPassword("Library password: ") },
         positional,
-        { keepGps: flags["keep-gps"] === true, offset: str("offset") },
+        {
+          keepGps: flags["keep-gps"] === true,
+          offset: str("offset"),
+          location: str("location"),
+        },
       );
       for (const p of added) process.stdout.write(`added ${p.id}\n`);
       await cdn.invalidate(["/data/*"]);
+      return 0;
+    }
+    case "ls": {
+      const rows = await listPhotos(store, {
+        month: positional[0],
+        featuredOnly: flags.featured === true,
+      });
+      if (!rows.length) { process.stdout.write("no photos\n"); return 0; }
+      process.stdout.write(`${formatList(rows)}\n${rows.length} photos\n`);
       return 0;
     }
     case "edit": {
@@ -4527,9 +4788,9 @@ async function main(): Promise<number> {
       await uploadSite(store, cdn, positional[0] ?? "site/dist");
       process.stdout.write("site deployed\n");
       return 0;
-    case "reindex": {
-      const index = await reindex(store);
-      process.stdout.write(`reindexed ${index.photoCount} photos across ${index.months.length} months\n`);
+    case "repair": {
+      const index = await repair(store);
+      process.stdout.write(`rebuilt ${index.photoCount} photos across ${index.months.length} months\n`);
       await cdn.invalidate(["/data/*"]);
       return 0;
     }
@@ -4560,10 +4821,22 @@ async function main(): Promise<number> {
       await cdn.invalidate(["/data/*"]);
       return 0;
     }
-    case "restore-manifest":
-      await restoreManifest(store, positional[0]);
+    case "restore": {
+      const path = positional[0];
+      if (!path) {
+        process.stderr.write("usage: photos restore <data/path> [version]\n");
+        return 1;
+      }
+      if (!positional[1]) {
+        const versions = await listFileVersions(store, path);
+        process.stdout.write(`${versions.length} versions of ${path}:\n`);
+        for (const v of versions) process.stdout.write(`  ${v.versionId}  ${v.lastModified}\n`);
+      }
+      await restoreFile(store, path, positional[1]);
+      process.stdout.write(`restored ${path}\n`);
       await cdn.invalidate(["/data/*"]);
       return 0;
+    }
     case "record-backup":
       await recordBackup(store, new Date().toISOString());
       await cdn.invalidate(["/data/*"]);
@@ -6389,6 +6662,6 @@ git commit -m "test: end-to-end pass from CLI ingest through browser decryption"
 - [ ] `npm run typecheck` — no type errors across workspaces
 - [ ] `npm run test:e2e` — the browser pass passes
 - [ ] `bash infra/bootstrap.sh <bucket> <domain> <profile>` has been run, the remaining manual steps in `infra/README.md` are complete, and the distribution id is in `photos.config.json`
-- [ ] `photos add` on a real photo, then `photos verify` reports OK
+- [ ] `photos add` on a real photo with `--location`, then `photos ls` shows it and `photos verify --decrypt-sample` reports OK
 - [ ] `photos record-backup` after the first real `aws s3 sync` of `orig/` and `data/`
 - [ ] Confirm in a browser that a web copy carries the rights and no-AI tags: `exiftool <downloaded web copy>` shows Creator, UsageTerms, and Robots, and shows no GPS
