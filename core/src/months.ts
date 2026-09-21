@@ -2,22 +2,26 @@ const ISO_WITH_OFFSET =
   /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
- * The month a photo belongs to, from its LOCAL capture date.
+ * Parse an ISO timestamp with a UTC offset and extract local date components.
  *
  * An ISO timestamp carrying an offset already expresses local time, so the
  * literal date prefix is the local date. Constructing a Date here would
  * normalize to UTC and file evening photos into the following month.
  */
-export function monthOf(takenAt: string): string {
+function parseLocal(takenAt: string): { year: string; month: string; day: string } {
   const m = ISO_WITH_OFFSET.exec(takenAt);
   if (!m) throw new Error(`takenAt must be ISO 8601 with a UTC offset: ${takenAt}`);
-  return `${m[1]}-${m[2]}`;
+  return { year: m[1]!, month: m[2]!, day: m[3]! };
+}
+
+export function monthOf(takenAt: string): string {
+  const { year, month } = parseLocal(takenAt);
+  return `${year}-${month}`;
 }
 
 export function localDateOf(takenAt: string): string {
-  const m = ISO_WITH_OFFSET.exec(takenAt);
-  if (!m) throw new Error(`takenAt must be ISO 8601 with a UTC offset: ${takenAt}`);
-  return `${m[1]}-${m[2]}-${m[3]}`;
+  const { year, month, day } = parseLocal(takenAt);
+  return `${year}-${month}-${day}`;
 }
 
 export function slugify(s: string): string {

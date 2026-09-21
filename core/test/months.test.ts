@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { monthOf, slugify, makePhotoId } from "../src/months.js";
+import { monthOf, localDateOf, slugify, makePhotoId } from "../src/months.js";
 
 describe("monthOf", () => {
   it("uses the local date, not UTC, at a negative offset", () => {
@@ -18,6 +18,12 @@ describe("monthOf", () => {
 
   it("rejects a timestamp with no offset", () => {
     expect(() => monthOf("2026-03-14T18:22:05")).toThrow(/offset/);
+  });
+});
+
+describe("localDateOf", () => {
+  it("rejects a timestamp with no offset", () => {
+    expect(() => localDateOf("2026-03-14T18:22:05")).toThrow(/offset/);
   });
 });
 

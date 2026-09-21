@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toBase64, fromBase64, utf8, concat, u32be, u64be } from "../src/bytes.js";
+import { toBase64, fromBase64, utf8, concat, u32be, u64be, equal } from "../src/bytes.js";
 
 describe("bytes", () => {
   it("round-trips base64", () => {
@@ -18,5 +18,23 @@ describe("bytes", () => {
   it("writes big-endian integers", () => {
     expect(u32be(4194304)).toEqual(new Uint8Array([0, 64, 0, 0]));
     expect(u64be(1)).toEqual(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 1]));
+  });
+
+  it("compares equal arrays", () => {
+    const a = new Uint8Array([1, 2, 3]);
+    const b = new Uint8Array([1, 2, 3]);
+    expect(equal(a, b)).toBe(true);
+  });
+
+  it("returns false for same-length differing arrays", () => {
+    const a = new Uint8Array([1, 2, 3]);
+    const b = new Uint8Array([1, 2, 4]);
+    expect(equal(a, b)).toBe(false);
+  });
+
+  it("returns false for different-length arrays", () => {
+    const a = new Uint8Array([1, 2, 3]);
+    const b = new Uint8Array([1, 2]);
+    expect(equal(a, b)).toBe(false);
   });
 });
