@@ -246,6 +246,11 @@ fetch without resolving ids across month shards. It is regenerated from the
 safe: the flag in the month shard is the source of truth and this file is a
 derived cache.
 
+The duplication has one sharp edge worth stating: editing a featured photo's
+title or caption must regenerate this file too, or the home page will show
+stale text. `edit`, `feature`, `unfeature`, and `rm` all regenerate it, and
+`verify` reports any record here that disagrees with its month shard.
+
 Expected to hold tens of photos, not hundreds. If it ever grows past a few
 hundred it should shard like the months do, but at a handful of features a week
 that is years away.
@@ -356,7 +361,7 @@ backup requirements in section 8 are not optional.
 | Command | Behavior |
 |---|---|
 | `photos add <files…>` | Prompts per file for title, caption, location; extracts EXIF; builds derivatives; encrypts the original; wraps its key, and publishes — all in one run |
-| `photos edit <id>` | Amends title, caption, or location in place |
+| `photos edit <id>` | Amends title, caption, or location in place, regenerating `featured.json` if the photo is featured |
 | `photos rm <id>` | Removes the record, its key entry, and its objects |
 | `photos feature <id…>` | Marks photos for the home page and regenerates `featured.json` |
 | `photos unfeature <id…>` | Clears the flag and regenerates `featured.json` |
@@ -600,6 +605,8 @@ a curious visitor reading the network tab.
 - Write ordering: a simulated failure at each step leaves the live manifest
   consistent.
 - `gc` identifies exactly the orphans and nothing referenced.
+- Editing a featured photo updates both its month shard and `featured.json`.
+- `verify` detects a `featured.json` record that has drifted from its shard.
 - Month assignment from `takenAt`: a photo at 19:00 on the last day of a month
   at a negative UTC offset files into that month, not the next. The same for a
   positive offset at 01:00 on the first day.
