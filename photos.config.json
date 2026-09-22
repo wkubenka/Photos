@@ -1,0 +1,11 @@
+{
+  "bucket": "photos.example.com",
+  "region": "us-east-1",
+  "profile": "photos",
+  "distributionId": "REPLACE_AFTER_BOOTSTRAP",
+  "siteUrl": "https://photos.example.com",
+  "creator": "William Kubenka",
+  "copyright": "© 2026 William Kubenka. All rights reserved.",
+  "usageTerms": "No reproduction, redistribution, or use as AI training data without written permission.",
+  "sizes": { "display": 2048, "thumb": 640 }
+}

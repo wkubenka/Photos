@@ -1,0 +1,10 @@
+{
+  "name": "@photos/cli",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": { "photos": "./dist/bin.js" },
+  "dependencies": {
+    "@photos/core": "*",
+    "zod": "^3.23.0"
+  }
+}
