@@ -2,8 +2,13 @@
   "name": "@photos/cli",
   "version": "1.0.0",
   "type": "module",
-  "bin": { "photos": "./dist/bin.js" },
+  "bin": {
+    "photos": "./dist/bin.js"
+  },
   "dependencies": {
+    "@aws-sdk/client-cloudfront": "^3.1137.0",
+    "@aws-sdk/client-s3": "^3.1137.0",
+    "@aws-sdk/credential-providers": "^3.1137.0",
     "@photos/core": "*",
     "zod": "^3.23.0"
   }
