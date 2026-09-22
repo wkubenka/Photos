@@ -421,7 +421,7 @@ Per source file, using sharp:
    - `XMP-photoshop:Credit`.
    - Opt-out signals: `XMP-xmpRights:Marked=True`,
      `XMP:Robots="noai, noimageai"`, a TDM reservation of 1, and
-     `XMP-Iptc4xmpExt:DigitalSourceType` set to the IPTC
+     `XMP-iptcExt:DigitalSourceType` set to the IPTC
      `digitalCapture` value.
    - GPS only when `--keep-gps` is passed for that file.
 

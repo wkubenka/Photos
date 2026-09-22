@@ -2602,7 +2602,7 @@ export async function writeRights(
 
       // Opt-out signals
       "XMP-xmp:Robots": "noai, noimageai",
-      "XMP-Iptc4xmpExt:DigitalSourceType": DIGITAL_CAPTURE,
+      "XMP-iptcExt:DigitalSourceType": DIGITAL_CAPTURE,
       "XMP-tdm:Reservation": 1,
 
       // Description
