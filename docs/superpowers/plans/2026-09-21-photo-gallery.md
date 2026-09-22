@@ -5864,7 +5864,7 @@ git commit -m "feat(site): add an accessible lightbox with keyboard and swipe na
   - `interface UnlockController { state(): UnlockState; subscribe(fn: (s: UnlockState) => void): void; submit(password: string): Promise<void>; lock(): void; masterKey(): Uint8Array | null; restore(): Promise<void> }`
   - `interface UnlockDeps { derive: (password: string, kdf: KdfParams) => Promise<Uint8Array>; loadKeys: () => Promise<KeysFile>; storage: Pick<Storage, "getItem" | "setItem" | "removeItem">; supported: () => { ok: true } | { ok: false; reason: string } }`
 
-Worker messages: `{ type: "derive"; password; kdf }` → `{ type: "derived"; key }`; `{ type: "decrypt"; container; dataKey; photoId }` → `{ type: "progress"; done; total }` and `{ type: "decrypted"; bytes }` or `{ type: "error"; message }`.
+Worker messages: `{ type: "derive"; password; kdf }` → `{ type: "derived"; key }`; `{ type: "decrypt"; url; dataKey; photoId; containerLength }` → `{ type: "progress"; done; total }` and `{ type: "decrypted"; bytes }` or `{ type: "error"; message }`. The worker fetches the URL itself rather than being handed the bytes, so it can decrypt each chunk as it streams in; `containerLength` comes from `original.bytes` in the manifest and is what lets the decryptor compute the final chunk's length.
 
 - [ ] **Step 1: Write the failing test**
 
