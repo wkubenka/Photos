@@ -2,15 +2,26 @@
   "name": "photos",
   "private": true,
   "type": "module",
-  "workspaces": ["core", "cli", "site"],
-  "engines": { "node": ">=20" },
+  "workspaces": [
+    "core",
+    "cli",
+    "site"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --exclude 'e2e/**'",
     "typecheck": "tsc -b",
-    "photos": "tsx cli/src/bin.ts"
+    "photos": "tsx cli/src/bin.ts",
+    "build:site": "npm run build --workspace site",
+    "fixture": "tsx e2e/build-fixture.ts",
+    "test:e2e": "npm run build:site && npm run fixture && playwright test -c e2e/playwright.config.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^20.14.0",
+    "http-server": "^14.1.1",
     "tsx": "^4.23.15",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"

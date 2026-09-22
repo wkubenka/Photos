@@ -4,3 +4,5 @@ dist/
 .DS_Store
 .superpowers/
 e2e/.fixture/
+test-results/
+playwright-report/
