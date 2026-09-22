@@ -11,6 +11,7 @@
     "@aws-sdk/credential-providers": "^3.1137.0",
     "@photos/core": "*",
     "exiftool-vendored": "^28.8.0",
+    "sharp": "^0.33.5",
     "zod": "^3.23.0"
   }
 }
