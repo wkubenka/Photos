@@ -39,6 +39,37 @@ export interface RightsInput {
   exif: Photo["exif"];
 }
 
+// The schema stores aperture/shutter/focal length as photographer-facing
+// display strings ("f/8", "1/60", "23mm"); EXIF wants them as numbers (an
+// f-number, a ratio of seconds, millimeters). These convert one way, from
+// display string to the numeric value exiftool expects, and throw with the
+// offending value on anything that doesn't parse — silently dropping a
+// malformed value would be exactly the accidental-loss failure mode this
+// module exists to prevent.
+function parseFNumber(aperture: string): number {
+  const m = /^f\/?\s*([\d.]+)$/i.exec(aperture.trim());
+  if (!m) throw new Error(`cannot parse aperture as an f-number: ${JSON.stringify(aperture)}`);
+  return Number(m[1]);
+}
+
+function parseFocalLengthMm(focalLength: string): number {
+  const m = /^([\d.]+)\s*mm$/i.exec(focalLength.trim());
+  if (!m) throw new Error(`cannot parse focal length in mm: ${JSON.stringify(focalLength)}`);
+  return Number(m[1]);
+}
+
+function parseExposureSeconds(shutter: string): number {
+  const trimmed = shutter.trim();
+  const fraction = /^([\d.]+)\s*\/\s*([\d.]+)$/.exec(trimmed);
+  if (fraction) {
+    const [, num, den] = fraction;
+    return Number(num) / Number(den);
+  }
+  const whole = Number(trimmed);
+  if (Number.isFinite(whole)) return whole;
+  throw new Error(`cannot parse shutter speed as a fraction or number of seconds: ${JSON.stringify(shutter)}`);
+}
+
 /**
  * Re-injects the whitelist onto a metadata-free derivative.
  *
@@ -65,6 +96,10 @@ export async function writeRights(
       "XMP-xmpRights:WebStatement": config.siteUrl,
       "XMP-xmpRights:Marked": "True",
       "XMP-photoshop:Credit": config.creator,
+      // Legacy-EXIF-reader fallbacks: not part of the design doc's rights
+      // list, but IPTC:CopyrightNotice/XMP-dc:Creator aren't visible to
+      // tools that only read classic EXIF, so these are deliberately
+      // duplicated here rather than left as an oversight.
       "EXIF:Copyright": config.copyright,
       "EXIF:Artist": config.creator,
 
@@ -78,10 +113,13 @@ export async function writeRights(
       "XMP-dc:Description": photo.caption,
       "IPTC:Caption-Abstract": photo.caption,
 
-      // Whitelisted camera fields
+      // Whitelisted camera fields (all six of ExifSchema's fields)
       "EXIF:Model": photo.exif.camera,
       "EXIF:LensModel": photo.exif.lens,
       "EXIF:ISO": photo.exif.iso,
+      "EXIF:FocalLength": parseFocalLengthMm(photo.exif.focalLength),
+      "EXIF:FNumber": parseFNumber(photo.exif.aperture),
+      "EXIF:ExposureTime": parseExposureSeconds(photo.exif.shutter),
       "EXIF:DateTimeOriginal": photo.takenAt,
     };
 
@@ -92,9 +130,17 @@ export async function writeRights(
       tags["EXIF:GPSLongitudeRef"] = opts.gps.lon >= 0 ? "E" : "W";
     }
 
-    await writer.write(path, tags, {
+    // exiftool-vendored does not throw on a rejected tag (a typo'd group, an
+    // unwritable name, a value it won't coerce) — it resolves normally and
+    // reports the problem as a string in `result.warnings`. That's exactly
+    // the silent-drop failure mode this module exists to prevent, so any
+    // warning here is treated as fatal rather than merely logged.
+    const result = await writer.write(path, tags, {
       writeArgs: ["-overwrite_original"],
     });
+    if (result.warnings && result.warnings.length > 0) {
+      throw new Error(`exiftool warned while writing rights metadata: ${result.warnings.join("; ")}`);
+    }
     return await readFile(path);
   } finally {
     await rm(dir, { recursive: true, force: true });

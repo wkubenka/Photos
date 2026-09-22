@@ -56,11 +56,17 @@ describe("writeRights", () => {
     const tags = await tagsOf(await writeRights(await blank(), photo, config)) as Record<string, unknown>;
     expect(String(tags.Robots)).toBe("noai, noimageai");
     expect(String(tags.DigitalSourceType)).toContain("digitalCapture");
+    expect(String(tags.Reservation)).toBe("1");
   }, 30_000);
 
   it("writes the whitelisted camera fields and the description", async () => {
-    const tags = await tagsOf(await writeRights(await blank(), photo, config));
+    const tags = await tagsOf(await writeRights(await blank(), photo, config)) as Record<string, unknown>;
     expect(String(tags.Model)).toContain("X-T5");
+    expect(String(tags.LensModel)).toContain("16-55mm");
+    expect(Number(tags.ISO)).toBe(400);
+    expect(String(tags.FocalLength)).toContain("23");
+    expect(Number(tags.FNumber)).toBe(8);
+    expect(String(tags.ExposureTime)).toContain("60");
     expect(String(tags.Description ?? tags.ImageDescription)).toContain("canyon mouth");
   }, 30_000);
 
@@ -75,5 +81,8 @@ describe("writeRights", () => {
     const out = await writeRights(await blank(), photo, config, { gps: { lat: 29.2, lon: -103.6 } });
     const tags = await tagsOf(out) as Record<string, unknown>;
     expect(tags.GPSLatitude).toBeDefined();
+    expect(tags.GPSLongitude).toBeDefined();
+    expect(Number(tags.GPSLatitude)).toBeCloseTo(29.2, 3);
+    expect(Number(tags.GPSLongitude)).toBeCloseTo(-103.6, 3);
   }, 30_000);
 });
