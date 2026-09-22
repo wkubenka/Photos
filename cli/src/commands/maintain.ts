@@ -96,8 +96,8 @@ export async function collectGarbage(store: Store): Promise<string[]> {
       const shard = MonthFileSchema.parse(JSON.parse(new TextDecoder().decode(body)));
       if (shard.photos.length === 0) staleShards.push(key);
     } catch {
-      // Unparseable and unreferenced: safe to reclaim.
-      staleShards.push(key);
+      // Shard contents cannot be verified — could be truncated, corrupted, or mid-migration.
+      // Never propose deletion of unverifiable data that might contain photo records.
     }
   }
 

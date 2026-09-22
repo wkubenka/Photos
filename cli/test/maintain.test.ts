@@ -3,7 +3,7 @@ import { createMemoryStore } from "../src/memory-store.js";
 import {
   publish, listPhotos, formatList, collectGarbage, deleteGarbage, repair,
 } from "../src/commands/maintain.js";
-import { KEYS, commit, rebuildFeatured, rebuildIndex, readIndex, readMonth } from "../src/manifest.js";
+import { commit, rebuildFeatured, rebuildIndex, readIndex, readMonth } from "../src/manifest.js";
 import { SCHEMA_VERSION, type MonthFile, type Photo } from "@photos/core";
 
 function photo(id: string, takenAt: string, featured = false): Photo {
@@ -131,6 +131,31 @@ describe("garbage collection", () => {
       new TextEncoder().encode(JSON.stringify({
         schemaVersion: SCHEMA_VERSION, month: "2026-03",
         photos: [photo("a", "2026-03-14T10:00:00-06:00")],
+      })),
+      "application/json", "x",
+    );
+    expect(await collectGarbage(store)).not.toContain("data/months/2026-03.json");
+  });
+
+  it("refuses to collect an unindexed shard with invalid JSON", async () => {
+    await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [photo("b", "2026-08-01T10:00:00-06:00")] }]);
+    // An unindexed shard that will not parse — could be truncated, corrupted, or mid-migration.
+    await store.put(
+      "data/months/2026-03.json",
+      new TextEncoder().encode("{ not json"),
+      "application/json", "x",
+    );
+    expect(await collectGarbage(store)).not.toContain("data/months/2026-03.json");
+  });
+
+  it("refuses to collect an unindexed shard that fails schema validation", async () => {
+    await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [photo("b", "2026-08-01T10:00:00-06:00")] }]);
+    // An unindexed shard with valid JSON but missing the photos array — fails schema validation.
+    await store.put(
+      "data/months/2026-03.json",
+      new TextEncoder().encode(JSON.stringify({
+        schemaVersion: SCHEMA_VERSION, month: "2026-03",
+        // Missing photos array
       })),
       "application/json", "x",
     );
