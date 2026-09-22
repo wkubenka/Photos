@@ -533,7 +533,7 @@ memory-only strictness is preferred later.
 | Condition | Behavior |
 |---|---|
 | Wrong password | Verifier fails; message shown in under a second; nothing downloaded |
-| Network failure mid-transfer | Retry the failed byte range up to three times, then offer a manual retry |
+| Network failure mid-transfer | Retry the whole download up to three times with a short backoff, then offer a manual retry. Not the failed byte range: resuming mid-stream would mean re-seeding the chunk decryptor at an arbitrary offset, which is not worth the complexity at this size |
 | Chunk fails its GCM tag | Report the file as corrupt or tampered; render nothing partial |
 | SHA-256 mismatch after decrypt | Same as above; the download is not offered |
 | Photo has no entry in `keys.json` | The original control is absent for that photo, not broken |

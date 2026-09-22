@@ -32,6 +32,11 @@ function fakeFetch(body: ReadableStream<Uint8Array> | null, opts: { ok?: boolean
   return (async () => ({ ok: opts.ok ?? true, status: opts.status ?? 200, body })) as unknown as typeof fetch;
 }
 
+// Most of these drive a single-shot fake fetch, which a retry would re-read
+// from an already-consumed stream; they assert the first failure's reporting,
+// not the retry policy, so they turn retries off.
+const noRetry = { retries: 0 };
+
 describe("runDecrypt", () => {
   it("emits progress incrementally as network chunks arrive, then the full plaintext", async () => {
     const dataKey = newDataKey();
@@ -81,6 +86,7 @@ describe("runDecrypt", () => {
         { url: "https://example.test/original", dataKey, photoId, containerLength: corrupted.length },
         fakeFetch(streamOf(corrupted, corrupted.length)),
         (e) => events.push(e),
+        noRetry,
       ),
     ).resolves.toBeUndefined();
 
@@ -97,10 +103,95 @@ describe("runDecrypt", () => {
       { url: "https://example.test/missing", dataKey: newDataKey(), photoId: "photo-1", containerLength: 100 },
       fakeFetch(null, { ok: false, status: 404 }),
       (e) => events.push(e),
+      noRetry,
     );
     expect(events).toEqual([
       { type: "error", kind: "download", message: "could not download the original (404)" },
     ]);
+  });
+
+  // Spec section 7: a network failure mid-transfer is retried up to three
+  // times before the viewer is asked to do anything. There was no retry at
+  // all, so one blip on a 40 MB transfer meant starting from zero on the
+  // next click — the failure most likely on a phone.
+  it("retries a failed download up to three times before reporting it", async () => {
+    const attempts: string[] = [];
+    const failing = (async (url: string) => {
+      attempts.push(url);
+      throw new Error("network blip");
+    }) as unknown as typeof fetch;
+
+    const waits: number[] = [];
+    const events: DecryptEvent[] = [];
+    await runDecrypt(
+      { url: "https://example.test/original", dataKey: newDataKey(), photoId: "photo-1", containerLength: 100 },
+      failing,
+      (e) => events.push(e),
+      { delay: async (ms) => { waits.push(ms); } },
+    );
+
+    expect(attempts).toHaveLength(4); // the first try plus three retries
+    expect(waits).toEqual([500, 1000, 2000]); // a short, growing backoff
+    expect(events).toEqual([
+      { type: "error", kind: "download", message: "network blip" },
+    ]);
+  });
+
+  it("recovers when a retry succeeds, emitting no error", async () => {
+    const dataKey = newDataKey();
+    const photoId = "photo-1";
+    const plaintext = new TextEncoder().encode("r".repeat(200));
+    const container = await encryptOriginal(plaintext, dataKey, photoId, { chunkSize: 32 });
+
+    let calls = 0;
+    const flaky = (async () => {
+      calls++;
+      if (calls === 1) throw new Error("network blip");
+      return { ok: true, status: 200, body: streamOf(container, 17) };
+    }) as unknown as typeof fetch;
+
+    const events: DecryptEvent[] = [];
+    await runDecrypt(
+      { url: "https://example.test/original", dataKey, photoId, containerLength: container.length },
+      flaky,
+      (e) => events.push(e),
+      { delay: async () => {} },
+    );
+
+    expect(calls).toBe(2);
+    expect(events.some((e) => e.type === "error")).toBe(false);
+    const decrypted = events.filter((e): e is Extract<DecryptEvent, { type: "decrypted" }> => e.type === "decrypted");
+    expect(decrypted).toHaveLength(1);
+    expect(decrypted[0]!.bytes).toEqual(plaintext);
+  });
+
+  // A chunk that fails its GCM tag will fail again: retrying it only delays
+  // telling the viewer their file may have been altered.
+  it("never retries a decrypt failure", async () => {
+    const dataKey = newDataKey();
+    const photoId = "photo-1";
+    const container = await encryptOriginal(
+      new TextEncoder().encode("z".repeat(200)), dataKey, photoId, { chunkSize: 32 },
+    );
+    const corrupted = container.slice();
+    corrupted[30] = corrupted[30]! ^ 0xff;
+
+    let calls = 0;
+    const counting = (async () => {
+      calls++;
+      return { ok: true, status: 200, body: streamOf(corrupted, corrupted.length) };
+    }) as unknown as typeof fetch;
+
+    const events: DecryptEvent[] = [];
+    await runDecrypt(
+      { url: "https://example.test/original", dataKey, photoId, containerLength: corrupted.length },
+      counting,
+      (e) => events.push(e),
+      { delay: async () => {} },
+    );
+
+    expect(calls).toBe(1);
+    expect(events.find((e): e is ErrorEvent => e.type === "error")!.kind).toBe("decrypt");
   });
 
   // A chunk failing its GCM tag and the network dropping mid-transfer both
@@ -135,6 +226,7 @@ describe("runDecrypt", () => {
       { url: "https://example.test/original", dataKey, photoId, containerLength: container.length },
       fakeFetch(flakyStream),
       (e) => events.push(e),
+      noRetry,
     );
 
     expect(events.some((e) => e.type === "decrypted")).toBe(false);

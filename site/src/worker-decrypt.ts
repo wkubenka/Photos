@@ -25,53 +25,103 @@ export type DecryptEvent =
 // happens to say.
 class DownloadFailure extends Error {}
 
+/**
+ * How many times a failed download is retried before the error reaches the
+ * UI (which then offers a manual retry). A 40 MB transfer on a phone is the
+ * failure this exists for: one blip used to mean starting over on the next
+ * click.
+ *
+ * The whole download is retried, not the failed byte range. Resuming
+ * mid-stream would mean re-seeding the chunk decryptor at an arbitrary
+ * offset, and the container is authenticated chunk by chunk — not worth the
+ * complexity here. A decrypt failure is never retried: a chunk that fails
+ * its GCM tag will fail again.
+ */
+const MAX_RETRIES = 3;
+const RETRY_BACKOFF_MS = 500;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+export interface RetryOptions {
+  retries?: number;
+  /** Injected so tests do not actually wait out the backoff. */
+  delay?: (ms: number) => Promise<void>;
+}
+
 export async function runDecrypt(
   req: DecryptRequest,
   fetchFn: typeof fetch,
   emit: (event: DecryptEvent) => void,
+  opts: RetryOptions = {},
 ): Promise<void> {
-  try {
-    let res: Response;
+  const retries = opts.retries ?? MAX_RETRIES;
+  const delay = opts.delay ?? sleep;
+
+  for (let attempt = 0; ; attempt++) {
     try {
-      res = await fetchFn(req.url);
+      await attemptDecrypt(req, fetchFn, emit);
+      return;
+    } catch (err) {
+      if (err instanceof DownloadFailure && attempt < retries) {
+        // Each attempt starts the transfer, and the progress bar, over.
+        await delay(RETRY_BACKOFF_MS * 2 ** attempt);
+        continue;
+      }
+      const kind = err instanceof DownloadFailure ? "download" : "decrypt";
+      emit({ type: "error", kind, message: (err as Error).message });
+      return;
+    }
+  }
+}
+
+async function attemptDecrypt(
+  req: DecryptRequest,
+  fetchFn: typeof fetch,
+  emit: (event: DecryptEvent) => void,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetchFn(req.url);
+  } catch (err) {
+    throw new DownloadFailure((err as Error).message);
+  }
+  if (!res.ok || !res.body) throw new DownloadFailure(`could not download the original (${res.status})`);
+
+  const decryptor = createStreamDecryptor(req.dataKey, req.photoId, req.containerLength);
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try {
+    reader = res.body.getReader();
+  } catch (err) {
+    // e.g. a retry handed back a body that is already locked or consumed.
+    throw new DownloadFailure((err as Error).message);
+  }
+  const pieces: Uint8Array[] = [];
+  let done = 0;
+
+  for (;;) {
+    let value: Uint8Array | undefined;
+    let finished: boolean;
+    try {
+      ({ value, done: finished } = await reader.read());
     } catch (err) {
       throw new DownloadFailure((err as Error).message);
     }
-    if (!res.ok || !res.body) throw new DownloadFailure(`could not download the original (${res.status})`);
-
-    const decryptor = createStreamDecryptor(req.dataKey, req.photoId, req.containerLength);
-    const reader = res.body.getReader();
-    const pieces: Uint8Array[] = [];
-    let done = 0;
-
-    for (;;) {
-      let value: Uint8Array | undefined;
-      let finished: boolean;
-      try {
-        ({ value, done: finished } = await reader.read());
-      } catch (err) {
-        throw new DownloadFailure((err as Error).message);
-      }
-      if (finished) break;
-      for (const out of await decryptor.push(value!)) {
-        pieces.push(out);
-        done += out.length;
-        emit({ type: "progress", done, total: decryptor.plainTotal ?? 0 });
-      }
-    }
-    for (const out of await decryptor.finish()) {
+    if (finished) break;
+    for (const out of await decryptor.push(value!)) {
       pieces.push(out);
       done += out.length;
       emit({ type: "progress", done, total: decryptor.plainTotal ?? 0 });
     }
-
-    const total = pieces.reduce((n, p) => n + p.length, 0);
-    const bytes = new Uint8Array(total);
-    let at = 0;
-    for (const p of pieces) { bytes.set(p, at); at += p.length; }
-    emit({ type: "decrypted", bytes });
-  } catch (err) {
-    const kind = err instanceof DownloadFailure ? "download" : "decrypt";
-    emit({ type: "error", kind, message: (err as Error).message });
   }
+  for (const out of await decryptor.finish()) {
+    pieces.push(out);
+    done += out.length;
+    emit({ type: "progress", done, total: decryptor.plainTotal ?? 0 });
+  }
+
+  const total = pieces.reduce((n, p) => n + p.length, 0);
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const p of pieces) { bytes.set(p, at); at += p.length; }
+  emit({ type: "decrypted", bytes });
 }
