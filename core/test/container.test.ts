@@ -71,37 +71,43 @@ describe("fails closed", () => {
     const { key, enc: encOrig } = await container();
     const enc: Uint8Array = new Uint8Array(encOrig);
     enc[HEADER_BYTES + 5]! ^= 0x01;
-    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow();
+    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow(/failed authentication/);
   });
 
   it("rejects a flipped authentication tag byte", async () => {
     const { key, enc: encOrig } = await container();
     const enc: Uint8Array = new Uint8Array(encOrig);
     enc[HEADER_BYTES + SMALL + 2]! ^= 0x01;
-    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow();
+    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow(/failed authentication/);
   });
 
   it("rejects a tampered header, because the header is authenticated", async () => {
     const { key, enc: encOrig } = await container();
     const enc: Uint8Array = new Uint8Array(encOrig);
     enc[21]! ^= 0x01; // last byte of the nonce prefix
-    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow();
+    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow(/failed authentication/);
   });
 
-  it("rejects truncation of the final chunk", async () => {
+  it("rejects truncation within the final chunk", async () => {
+    const { key, enc } = await container();
+    const truncated = enc.slice(0, enc.length - 1);
+    await expect(decryptOriginal(truncated, key, ID)).rejects.toThrow(/failed authentication/);
+  });
+
+  it("rejects a container missing a whole chunk", async () => {
     const { key, enc } = await container();
     const truncated = enc.slice(0, enc.length - (8 + TAG_BYTES));
-    await expect(decryptOriginal(truncated, key, ID)).rejects.toThrow();
+    await expect(decryptOriginal(truncated, key, ID)).rejects.toThrow(/disagrees with the header chunk count/);
   });
 
   it("rejects a wrong photo id", async () => {
     const { key, enc } = await container();
-    await expect(decryptOriginal(enc, key, "some-other-photo")).rejects.toThrow();
+    await expect(decryptOriginal(enc, key, "some-other-photo")).rejects.toThrow(/failed authentication/);
   });
 
   it("rejects a wrong data key", async () => {
     const { enc } = await container();
-    await expect(decryptOriginal(enc, newDataKey(), ID)).rejects.toThrow();
+    await expect(decryptOriginal(enc, newDataKey(), ID)).rejects.toThrow(/failed authentication/);
   });
 
   it("rejects a chunk spliced from another file", async () => {
@@ -110,7 +116,7 @@ describe("fails closed", () => {
     const b = await encryptOriginal(bytes(200), key, ID, { chunkSize: SMALL });
     const spliced = new Uint8Array(a);
     spliced.set(b.slice(HEADER_BYTES, HEADER_BYTES + SMALL + TAG_BYTES), HEADER_BYTES);
-    await expect(decryptOriginal(spliced, key, ID)).rejects.toThrow();
+    await expect(decryptOriginal(spliced, key, ID)).rejects.toThrow(/failed authentication/);
   });
 
   it("rejects two chunks swapped within one file", async () => {
@@ -121,14 +127,14 @@ describe("fails closed", () => {
     const second = enc.slice(HEADER_BYTES + unit, HEADER_BYTES + 2 * unit);
     enc.set(second, HEADER_BYTES);
     enc.set(first, HEADER_BYTES + unit);
-    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow();
+    await expect(decryptOriginal(enc, key, ID)).rejects.toThrow(/failed authentication/);
   });
 
-  it("rejects a container whose body length disagrees with the header", async () => {
+  it("rejects a container with trailing bytes", async () => {
     const { key, enc } = await container();
     const extended = new Uint8Array(enc.length + 5);
     extended.set(enc);
-    await expect(decryptOriginal(extended, key, ID)).rejects.toThrow(/length/i);
+    await expect(decryptOriginal(extended, key, ID)).rejects.toThrow(/failed authentication/);
   });
 });
 
