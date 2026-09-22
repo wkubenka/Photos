@@ -166,6 +166,76 @@ describe("addPhotos", () => {
     expect((await readFeatured(d.store)).photos).toEqual([]);
   }, 60_000);
 
+  // The duplicate-id pair. makePhotoId is a pure function of local date,
+  // title slug, and source filename, so two cards that both emit DSCF0001.JPG
+  // on the same day collide — and a collision used to overwrite the first
+  // photo's wrapped key and its orig/<id>.enc with no error at all. The
+  // source was read once at add time and S3 holds the only copy, so that is
+  // a permanently destroyed original. Both tests assert the error *and* that
+  // nothing was written.
+  it("refuses a batch in which two files produce the same id, writing nothing", async () => {
+    const store = createMemoryStore();
+    const first = await sourceFile("DSCF0001.jpg");
+    const second = await sourceFile("DSCF0001.jpg");
+
+    await expect(addPhotos(deps(store), [first, second], {}))
+      .rejects.toThrow(/duplicate photo id/);
+
+    // Named both ways round so the operator can see which two files collided.
+    await expect(addPhotos(deps(store), [first, second], {}))
+      .rejects.toThrow(new RegExp(`${first}[\\s\\S]*${second}`));
+
+    expect([...store.objects.keys()]).toEqual([]);
+  }, 90_000);
+
+  it("refuses to overwrite a photo already published under the same id", async () => {
+    const store = createMemoryStore();
+    const [published] = await addPhotos(deps(store), [await sourceFile("DSCF0001.jpg")], {});
+
+    const keysBefore = [...store.objects.keys()].sort();
+    const originalBefore = await store.get(published!.original.path);
+    const wrappedBefore = (await readKeys(store))!.keys[published!.id];
+
+    await expect(addPhotos(deps(store), [await sourceFile("DSCF0001.jpg")], {}))
+      .rejects.toThrow(/duplicate photo id/);
+
+    expect([...store.objects.keys()].sort()).toEqual(keysBefore);
+    // The bytes themselves, not just the key list: the failure mode being
+    // guarded against is a PUT over an existing object, which leaves the key
+    // list identical.
+    expect(await store.get(published!.original.path)).toEqual(originalBefore);
+    expect((await readKeys(store))!.keys[published!.id]).toEqual(wrappedBefore);
+  }, 90_000);
+
+  // Spec section 10 lists this test; the behaviour used to be the opposite of
+  // what it asserts — every month shard in the library was rewritten on every
+  // add, each rewrite leaving a noncurrent version to linger for 90 days.
+  it("touches exactly one month shard", async () => {
+    const store = createMemoryStore();
+    await addPhotos(deps(store), [await sourceFile("march.jpg")], {});
+    await addPhotos(deps(store), [
+      await sourceFile("august.jpg", { DateTimeOriginal: "2026:08:02 10:00:00" }),
+    ], {});
+
+    const shardWrites: string[] = [];
+    const put = store.put.bind(store);
+    store.put = async (key, ...rest) => {
+      if (key.startsWith("data/months/")) shardWrites.push(key);
+      return put(key, ...rest);
+    };
+
+    await addPhotos(deps(store), [
+      await sourceFile("august-2.jpg", { DateTimeOriginal: "2026:08:03 10:00:00" }),
+    ], {});
+
+    expect(shardWrites).toEqual(["data/months/2026-08.json"]);
+    // The untouched month is still listed and still correct.
+    const index = await readIndex(store);
+    expect(index.months.map((m) => m.month).sort()).toEqual(["2026-03", "2026-08"]);
+    expect(index.photoCount).toBe(3);
+    expect((await readMonth(store, "2026-03")).photos).toHaveLength(1);
+  }, 120_000);
+
   // The GPS pair: proves --keep-gps is actually wired end to end, not just
   // that Task 13's writeRights accepts an opts.gps object. Tags are read
   // back from the published derivative bytes, never from the source file.

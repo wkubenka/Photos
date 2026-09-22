@@ -65,6 +65,13 @@ export async function addPhotos(
   const months = new Map((await readAllMonths(store, index)).map((m) => [m.month, m]));
   const objects: { key: string; body: Uint8Array; contentType: string }[] = [];
   const added: Photo[] = [];
+  // Only the shards this run actually changes are handed to commit, so a
+  // library with a decade of months does not rewrite (and version) all of
+  // them to publish one photograph.
+  const touched = new Set<string>();
+  // Every id this batch has already claimed, with the file that claimed it,
+  // so a collision can name both sides of it.
+  const claimed = new Map<string, string>();
 
   for (const file of files) {
     const source = await readFile(file);
@@ -75,6 +82,34 @@ export async function addPhotos(
 
     const id = makePhotoId(extracted.takenAt, answers.title, extracted.frame);
     const month = monthOf(extracted.takenAt);
+    const shard = months.get(month) ?? (await readMonth(store, month));
+
+    // A photo id is a pure function of local date, title slug, and source
+    // filename, so two cards that both emit DSCF0001.JPG on the same day —
+    // or a re-run of `add` after a partial failure — produce the same id.
+    // Left unchecked that overwrites the first photo's wrapped key and its
+    // orig/<id>.enc, and the original is gone: it was read once, at add
+    // time, and S3 holds the only copy. So this runs before anything is
+    // written, and fails the whole run rather than disambiguating silently,
+    // because a collision nearly always means the operator is about to do
+    // something they did not intend.
+    const previousFile = claimed.get(id);
+    if (previousFile !== undefined) {
+      throw new Error(
+        `duplicate photo id "${id}": ${previousFile} and ${file} produce the same id. `
+        + "Nothing was written. Give one of them a different title, or rename the source "
+        + "file, then run add again.",
+      );
+    }
+    if (shard.photos.some((p) => p.id === id) || keysFile.keys[id] !== undefined) {
+      throw new Error(
+        `duplicate photo id "${id}": ${file} would overwrite the photo already published `
+        + `under that id (month ${month}), destroying its encrypted original. Nothing was `
+        + "written. Give it a different title, or rename the source file, then run add "
+        + "again — or run `photos rm " + id + "` first if replacing it is what you meant.",
+      );
+    }
+    claimed.set(id, file);
 
     const { display, thumb, lqip } = await buildDerivatives(source, config.sizes);
     const rightsInput = {
@@ -125,16 +160,18 @@ export async function addPhotos(
       },
     };
 
-    const shard = months.get(month) ?? (await readMonth(store, month));
     months.set(month, { ...shard, photos: [...shard.photos, photo] });
+    touched.add(month);
     added.push(photo);
   }
 
+  // rebuildIndex and rebuildFeatured need every month to compute counts and
+  // the featured set; only the set handed to commit for writing narrows.
   const allMonths = [...months.values()];
   await commit(store, {
     objects,
     keys: keysFile,
-    months: allMonths,
+    months: allMonths.filter((m) => touched.has(m.month)),
     featured: rebuildFeatured(allMonths),
     index: rebuildIndex(allMonths, index.lastBackupAt),
   });
