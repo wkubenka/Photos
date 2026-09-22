@@ -7,6 +7,13 @@ import { openLightbox, type LightboxHandle } from "./lightbox.js";
 export interface AppElements {
   app: HTMLElement;
   nav: HTMLElement;
+  // Both optional: only main.ts's production wiring supplies them, to fill
+  // the lightbox's "originals" slot (Task 25) and to release the object URL
+  // behind it. Kept as a callback pair rather than exposing the internal
+  // `lightbox` handle, so this module stays the one place that owns the
+  // open/close lifecycle and can be unit-tested without any of that wiring.
+  onLightboxOpen?: (handle: LightboxHandle, photo: Photo) => void;
+  onLightboxClose?: () => void;
 }
 
 export interface App {
@@ -134,11 +141,13 @@ export function createApp(library: Library, elements: AppElements): App {
       },
       onClose: () => {
         lightbox = null;
+        elements.onLightboxClose?.();
         if (closingProgrammatically) return;
         navigate({ kind: "month", month });
       },
       returnFocusTo: opener,
     });
+    elements.onLightboxOpen?.(lightbox, photo);
   }
 
   async function render(): Promise<void> {
