@@ -89,6 +89,24 @@ describe("unlock state machine", () => {
     expect(storage.map.size).toBe(0);
   });
 
+  it("keeps a stored key when restore cannot verify it because keys.json failed to load", async () => {
+    const storage = memoryStorage();
+    const u = createUnlock(deps({ storage }));
+    await u.submit("the right password");
+    expect(storage.map.size).toBe(1);
+
+    const revived = createUnlock(deps({
+      storage,
+      loadKeys: async () => { throw new Error("network down"); },
+    }));
+    await revived.restore();
+    expect(revived.state()).toEqual({ kind: "locked" });
+    expect(revived.masterKey()).toBeNull();
+    // A transient load failure is not evidence the key is wrong: it stays
+    // in storage so a later attempt (or the next page load) can restore it.
+    expect(storage.map.size).toBe(1);
+  });
+
   it("clears the key and storage on lock", async () => {
     const storage = memoryStorage();
     const u = createUnlock(deps({ storage }));

@@ -2,5 +2,6 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": { "outDir": "dist", "rootDir": ".", "types": [] },
   "include": ["src"],
+  "exclude": ["src/worker.ts"],
   "references": [{ "path": "../core/tsconfig.src.json" }]
 }

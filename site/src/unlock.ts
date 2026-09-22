@@ -33,6 +33,9 @@ export function defaultSupported(): { ok: true } | { ok: false; reason: string }
   if (typeof WebAssembly === "undefined") {
     return { ok: false, reason: "This browser does not support WebAssembly, which is needed to check the password." };
   }
+  if (typeof Worker === "undefined") {
+    return { ok: false, reason: "This browser does not support Web Workers, which are needed to unlock without freezing the page." };
+  }
   return { ok: true };
 }
 
@@ -82,19 +85,36 @@ export function createUnlock(deps: UnlockDeps): UnlockController {
       if (!support.ok) return;
       const stored = deps.storage.getItem(STORAGE_KEY);
       if (!stored) return;
+
+      let candidate: Uint8Array;
       try {
-        const candidate = fromBase64(stored);
-        const keysFile = KeysFileSchema.parse(await deps.loadKeys());
-        // After a password rotation the stored key no longer verifies, so it is
-        // discarded rather than left to fail later on a 40 MB download.
-        if (await checkVerifier(candidate, keysFile.verifier)) {
-          key = candidate;
-          set({ kind: "unlocked" });
-        } else {
-          deps.storage.removeItem(STORAGE_KEY);
-          set({ kind: "locked" });
-        }
+        candidate = fromBase64(stored);
       } catch {
+        // The stored value itself is unusable (corrupt base64) — nothing to keep.
+        deps.storage.removeItem(STORAGE_KEY);
+        set({ kind: "locked" });
+        return;
+      }
+
+      let keysFile: KeysFile;
+      try {
+        keysFile = KeysFileSchema.parse(await deps.loadKeys());
+      } catch {
+        // We could not verify the stored key — that is not evidence it is
+        // wrong. Leave it in storage so a later attempt can still restore
+        // it, and stay locked without surfacing the error (this runs on
+        // page load; an unhandled rejection there is worse than staying
+        // locked quietly).
+        set({ kind: "locked" });
+        return;
+      }
+
+      // After a password rotation the stored key no longer verifies, so it is
+      // discarded rather than left to fail later on a 40 MB download.
+      if (await checkVerifier(candidate, keysFile.verifier)) {
+        key = candidate;
+        set({ kind: "unlocked" });
+      } else {
         deps.storage.removeItem(STORAGE_KEY);
         set({ kind: "locked" });
       }
