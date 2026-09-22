@@ -24,21 +24,27 @@ export function createLibrary(fetchFn: typeof fetch = fetch): Library {
   }
 
   function index(): Promise<IndexFile> {
-    indexPromise ??= getJson("/data/index.json", "the photo index").then((r) =>
-      IndexFileSchema.parse(r),
-    );
+    if (!indexPromise) {
+      indexPromise = getJson("/data/index.json", "the photo index").then((r) =>
+        IndexFileSchema.parse(r),
+      );
+      indexPromise.catch(() => { indexPromise = null; });
+    }
     return indexPromise;
   }
 
-  async function month(m: string): Promise<MonthFile> {
+  function month(m: string): Promise<MonthFile> {
     const cached = monthCache.get(m);
     if (cached) return cached;
 
-    const entry = (await index()).months.find((x) => x.month === m);
-    if (!entry) throw new Error(`no photos for ${m}`);
+    const promise = (async () => {
+      const entry = (await index()).months.find((x) => x.month === m);
+      if (!entry) throw new Error(`no photos for ${m}`);
+      return MonthFileSchema.parse(await getJson(`/${entry.path}`, `photos for ${m}`));
+    })();
 
-    const promise = getJson(`/${entry.path}`, `photos for ${m}`).then((r) => MonthFileSchema.parse(r));
     monthCache.set(m, promise);
+    promise.catch(() => monthCache.delete(m));
     return promise;
   }
 
@@ -49,9 +55,12 @@ export function createLibrary(fetchFn: typeof fetch = fetch): Library {
     },
     month,
     featured() {
-      featuredPromise ??= getJson("/data/featured.json", "the featured photos").then(
-        (r) => FeaturedFileSchema.parse(r).photos,
-      );
+      if (!featuredPromise) {
+        featuredPromise = getJson("/data/featured.json", "the featured photos").then(
+          (r) => FeaturedFileSchema.parse(r).photos,
+        );
+        featuredPromise.catch(() => { featuredPromise = null; });
+      }
       return featuredPromise;
     },
     async photo(id, hint) {
