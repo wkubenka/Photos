@@ -112,10 +112,26 @@ export interface Change {
 }
 
 /**
- * The single writer of data/. Order is the spec's, and it is the reason an
- * interrupted run leaves the live site consistent: nothing references an
- * asset until its month shard lands, and no month shard is visible until the
- * index lands.
+ * The writer of data/ for every ordinary change. Order is the spec's, and it
+ * is the reason an interrupted run leaves the live site consistent: nothing
+ * references an asset until its month shard lands, and no month shard is
+ * visible until the index lands.
+ *
+ * Three commands write under data/ without going through here, and each is
+ * exempt for a stated reason:
+ *
+ * - `rm` (commands/curate.ts) rewrites data/keys.json *after* commit has
+ *   already removed the photo from the manifest, so the key entry goes last
+ *   and the site is never left referencing a photo whose key is gone.
+ * - `rotate-password` (commands/keys.ts) rewrites data/keys.json alone. No
+ *   photo record changes, so there is no month shard or index to write with
+ *   it.
+ * - `restore` (commands/keys.ts) writes back one previous version of one
+ *   data/ file, byte for byte. Passing it through commit would defeat the
+ *   point: the restored bytes must not be regenerated from anything. It is
+ *   the one writer that can leave data/ internally inconsistent — restoring
+ *   a month shard changes its photo count without touching index.json — so
+ *   it tells the operator to run `photos repair` afterwards.
  */
 export async function commit(store: Store, change: Change): Promise<void> {
   for (const o of change.objects ?? []) {

@@ -9,6 +9,7 @@ import {
   collectGarbage, deleteGarbage, formatList, listPhotos, publish, repair,
 } from "./commands/maintain.js";
 import { listFileVersions, restoreFile, rotatePassword } from "./commands/keys.js";
+import { KEYS } from "./manifest.js";
 import { formatReport, recordBackup, verifyLibrary } from "./commands/verify.js";
 import { uploadSite } from "./commands/deploy.js";
 import { closeExif, type ExtractedExif } from "./exif.js";
@@ -31,7 +32,8 @@ const USAGE = `photos <command>
   verify [--decrypt-sample]   check the library is consistent
   gc [--yes]                  list and optionally delete unreferenced objects
   rotate-password             re-wrap every data key under a new password
-  restore <data/path> [ver]   roll one manifest file back a version
+  restore <data/path> [ver]   list versions of one manifest file; with a
+                              version id, roll that file back to it
   record-backup               stamp today as the last backup date
 `;
 
@@ -43,6 +45,15 @@ async function askPhoto(file: string, exif: ExtractedExif, askLocation: boolean)
     const caption = await rl.question("  Caption: ");
     if (!askLocation) return { title, caption };
     return { title, caption, location: await rl.question("  Location: ") };
+  } finally {
+    rl.close();
+  }
+}
+
+async function confirm(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await rl.question(`${question} `)).trim().toLowerCase() === "yes";
   } finally {
     rl.close();
   }
@@ -88,17 +99,28 @@ async function main(): Promise<number> {
       return 0;
     }
     case "edit": {
+      const id = positional[0];
+      if (!id) {
+        process.stderr.write("usage: photos edit <id> [--title t] [--caption c] [--location l]\n");
+        return 1;
+      }
       const patch = { title: str("title"), caption: str("caption"), location: str("location") };
       const defined = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
-      const updated = await editPhoto(store, positional[0]!, defined);
+      const updated = await editPhoto(store, id, defined);
       process.stdout.write(`updated ${updated.id}\n`);
       await cdn.invalidate(["/data/*"]);
       return 0;
     }
-    case "rm":
-      await removePhoto(store, positional[0]!);
+    case "rm": {
+      const id = positional[0];
+      if (!id) {
+        process.stderr.write("usage: photos rm <id>\n");
+        return 1;
+      }
+      await removePhoto(store, id);
       await cdn.invalidate(["/data/*"]);
       return 0;
+    }
     case "feature":
     case "unfeature":
       await setFeatured(store, positional, command === "feature");
@@ -157,13 +179,45 @@ async function main(): Promise<number> {
         process.stderr.write("usage: photos restore <data/path> [version]\n");
         return 1;
       }
-      if (!positional[1]) {
+      // With no version id this lists and stops. It used to list and then
+      // restore anyway in the same run, which reads like a dry run and is
+      // not — on a command whose whole job is to overwrite live manifest
+      // state with older bytes.
+      const version = positional[1];
+      if (!version) {
         const versions = await listFileVersions(store, path);
         process.stdout.write(`${versions.length} versions of ${path}:\n`);
         for (const v of versions) process.stdout.write(`  ${v.versionId}  ${v.lastModified}\n`);
+        process.stdout.write(
+          "nothing was restored. Re-run with the version id you want:\n"
+          + `  photos restore ${path} <version>\n`,
+        );
+        return 0;
       }
-      await restoreFile(store, path, positional[1]);
+
+      // Rolling data/keys.json back past an `add` drops that photo's wrapped
+      // key, and its ciphertext under orig/ becomes undecryptable for good —
+      // the data key exists nowhere else.
+      if (path === KEYS.keys) {
+        process.stdout.write(
+          "WARNING: restoring data/keys.json rolls the wrapped data keys back.\n"
+          + "Any photo added after that version loses its key, and its encrypted\n"
+          + "original can never be decrypted again — the data key exists nowhere else.\n",
+        );
+        if (!(await confirm("Type yes to continue:"))) {
+          process.stdout.write("nothing was restored\n");
+          return 0;
+        }
+      }
+
+      await restoreFile(store, path, version);
       process.stdout.write(`restored ${path}\n`);
+      if (path.startsWith("data/months/")) {
+        process.stdout.write(
+          "This shard's photo count has changed, but data/index.json has not.\n"
+          + "Run `photos repair` now so the index and the rail agree with it.\n",
+        );
+      }
       await cdn.invalidate(["/data/*"]);
       return 0;
     }
