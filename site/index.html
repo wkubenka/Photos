@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noai, noimageai" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    />
+    <title>Photographs</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="site-title" href="/">Photographs</a>
+      <nav id="nav"></nav>
+    </header>
+    <main id="app">
+      <noscript>
+        <p>
+          This gallery builds itself from a photo index in your browser, so it needs
+          JavaScript enabled. Nothing is loaded from anywhere but this site.
+        </p>
+      </noscript>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

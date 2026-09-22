@@ -1,0 +1,21 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+}
+
+.site-title {
+  font-weight: 600;
+  text-decoration: none;
+  color: inherit;
+}

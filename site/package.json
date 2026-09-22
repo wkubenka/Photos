@@ -1,0 +1,8 @@
+{
+  "name": "@photos/site",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": { "build": "vite build", "dev": "vite" },
+  "dependencies": { "@photos/core": "*" },
+  "devDependencies": { "vite": "^5.4.0", "jsdom": "^25.0.0" }
+}
