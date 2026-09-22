@@ -49,6 +49,23 @@ describe("PhotoSchema", () => {
       PhotoSchema.parse({ ...photo, original: { ...photo.original, chunkCount: 0 } }),
     ).toThrow();
   });
+
+  // lqip is the one manifest string the site puts into a CSS context
+  // (a background-image rule), so it is pinned to the shape the image
+  // pipeline produces rather than accepted as any string.
+  it.each([
+    "url(javascript:alert(1))",
+    "data:text/html;base64,aGk=",
+    "data:image/jpeg;base64,aa\");}body{display:none",
+    "",
+  ])("rejects an lqip that is not a base64 image data URI: %s", (lqip) => {
+    expect(() => PhotoSchema.parse({ ...photo, lqip })).toThrow();
+  });
+
+  it("accepts the data URI shape the image pipeline emits", () => {
+    expect(PhotoSchema.parse({ ...photo, lqip: "data:image/jpeg;base64,/9j/4AAQSkZJRg==" }).lqip)
+      .toContain("data:image/jpeg;base64,");
+  });
 });
 
 describe("IndexFileSchema", () => {

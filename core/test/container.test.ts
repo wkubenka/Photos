@@ -59,6 +59,15 @@ describe("round trip", () => {
   it("refuses to encrypt an empty file", async () => {
     await expect(encryptOriginal(new Uint8Array(0), newDataKey(), ID)).rejects.toThrow(/empty/i);
   });
+
+  // decodeHeader already rejects a zero chunk size on the read side. Without
+  // the matching check here, chunkCountFor(n, 0) is Infinity and the encrypt
+  // loop never terminates — it hangs while the only copy of the photograph
+  // waits to be written.
+  it.each([0, -1, 1.5, Number.NaN])("refuses to encrypt with a chunk size of %s", async (size) => {
+    await expect(encryptOriginal(bytes(10), newDataKey(), ID, { chunkSize: size }))
+      .rejects.toThrow(/chunk size/i);
+  });
 });
 
 describe("fails closed", () => {

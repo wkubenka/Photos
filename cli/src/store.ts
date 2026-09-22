@@ -75,10 +75,31 @@ export function createS3Store(config: Config): Store {
       await client.send(new DeleteObjectCommand({ Bucket, Key }));
     },
     async listVersions(Key) {
-      const r = await client.send(new ListObjectVersionsCommand({ Bucket, Prefix: Key }));
-      return (r.Versions ?? [])
-        .filter((v) => v.Key === Key && v.VersionId)
-        .map((v) => ({ versionId: v.VersionId!, lastModified: v.LastModified?.toISOString() ?? "" }));
+      // Paginated like list(): S3 caps a version listing at 1000 entries, and
+      // a manifest file that has been rewritten on every publish passes that
+      // long before the versions worth restoring age out of the 90-day
+      // lifecycle rule. Without this, `photos restore` simply cannot see them.
+      const out: { versionId: string; lastModified: string }[] = [];
+      let KeyMarker: string | undefined;
+      let VersionIdMarker: string | undefined;
+      for (;;) {
+        const r = await client.send(new ListObjectVersionsCommand({
+          Bucket, Prefix: Key, KeyMarker, VersionIdMarker,
+        }));
+        for (const v of r.Versions ?? []) {
+          if (v.Key === Key && v.VersionId) {
+            out.push({
+              versionId: v.VersionId,
+              lastModified: v.LastModified?.toISOString() ?? "",
+            });
+          }
+        }
+        if (!r.IsTruncated) return out;
+        KeyMarker = r.NextKeyMarker;
+        VersionIdMarker = r.NextVersionIdMarker;
+        // Defensive: a truncated response with no marker would loop forever.
+        if (!KeyMarker && !VersionIdMarker) return out;
+      }
     },
     async getVersion(Key, VersionId) {
       const r = await client.send(new GetObjectCommand({ Bucket, Key, VersionId }));

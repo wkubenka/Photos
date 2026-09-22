@@ -4,6 +4,11 @@ export const SCHEMA_VERSION = 1;
 
 const ISO_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const MONTH_KEY = /^\d{4}-(?:0[1-9]|1[0-2])$/;
+// The lqip is the one manifest string that reaches a CSS context (the site
+// inserts it into a `background-image: url(...)` rule), so it is pinned to
+// the exact shape the image pipeline produces rather than left as any
+// string: nothing that is not a base64 image data URI can get that far.
+const LQIP_DATA_URI = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
 
 const WrappedSchema = z.object({ iv: z.string(), ct: z.string() });
 
@@ -45,7 +50,7 @@ export const PhotoSchema = z.object({
   featured: z.boolean().default(false),
   web: DerivativeSchema,
   thumb: DerivativeSchema,
-  lqip: z.string(),
+  lqip: z.string().regex(LQIP_DATA_URI, "lqip must be a base64 image data URI"),
   exif: ExifSchema,
   original: OriginalSchema,
 });

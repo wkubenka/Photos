@@ -7,12 +7,19 @@ end to end; CloudFront reaches it only through an Origin Access Control
 (OAC), and only that one distribution is allowed to read from it.
 
 Run every step below once, by hand, in order. Nothing here is covered by an
-automated test — `photos verify` (a later CLI command) checks that these
-resources exist and are configured correctly, but nothing can create them
-for you. Read each "Check" before moving to the next step; skipping the
-checks is how you end up with either a broken site or a publicly listable
-bucket, and the two failure modes look identical until you specifically go
-looking for them.
+automated test, and nothing can create these resources for you. `photos
+verify` does not check any of it: it makes no AWS-configuration calls at
+all. What it checks is the library's own consistency — that every object the
+manifest references exists and is the size the manifest records, that every
+photo has a wrapped key and every key a photo, that no id is used twice,
+that `featured.json` and the index agree with the month shards, and,
+with `--decrypt-sample`, that a sample original still decrypts to its
+recorded checksum. The bucket and distribution configuration is verified
+only by the "Check" blocks in this runbook, and in particular by the two
+curl commands in Step 6. Read each "Check" before moving to the next step;
+skipping the checks is how you end up with either a broken site or a
+publicly listable bucket, and the two failure modes look identical until you
+specifically go looking for them.
 
 ## Prerequisites
 

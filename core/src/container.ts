@@ -71,6 +71,13 @@ export async function encryptOriginal(
 ): Promise<Uint8Array> {
   if (plaintext.length === 0) throw new Error("refusing to encrypt an empty file");
   const chunkSize = opts.chunkSize ?? CHUNK_SIZE;
+  // The read side rejects a zero chunk size in decodeHeader; the write side
+  // has to reject it too, and earlier. chunkCountFor(n, 0) is Infinity, so
+  // the encrypt loop below would never terminate — it would spin forever
+  // while the operator's only copy of the photograph waits to be written.
+  if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
+    throw new Error(`invalid chunk size: ${chunkSize}`);
+  }
   const chunkCount = chunkCountFor(plaintext.length, chunkSize);
   const noncePrefix = new Uint8Array(4);
   globalThis.crypto.getRandomValues(noncePrefix);
