@@ -165,6 +165,27 @@ describe("garbage collection", () => {
   it("refuses to delete outside the prefixes it owns", async () => {
     await expect(deleteGarbage(store, ["data/index.json"])).rejects.toThrow(/refusing/);
   });
+
+  // readIndex returns an empty index when data/index.json is absent, so a lost
+  // index looked exactly like an empty library and every encrypted original
+  // became a deletion candidate: `photos gc --yes` would have deleted the
+  // entire archive.
+  it("refuses to propose anything when the index is gone and orig/ is not empty", async () => {
+    await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-03-14T10:00:00-06:00")] }]);
+    await store.delete("data/index.json");
+
+    await expect(collectGarbage(store)).rejects.toThrow(/repair/);
+    expect(await store.get("orig/a.enc")).not.toBeNull();
+  });
+
+  it("still collects orphans once the index has been repaired", async () => {
+    await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-03-14T10:00:00-06:00")] }]);
+    await store.put("orig/orphan.enc", new Uint8Array([9]), "application/octet-stream", "x");
+    await store.delete("data/index.json");
+
+    await repair(store);
+    expect(await collectGarbage(store)).toEqual(["orig/orphan.enc"]);
+  });
 });
 
 describe("repair", () => {
@@ -183,6 +204,55 @@ describe("repair", () => {
     expect(index.months.map((m) => m.month)).toEqual(["2026-08"]);
     expect((await readMonth(store, "2026-08")).photos[0]!.id).toBe("a");
     expect((await readMonth(store, "2026-03")).photos).toEqual([]);
+  });
+
+  // repair used to take its month list from the index it is supposed to
+  // rebuild, so with no index it rebuilt nothing at all — exactly the
+  // situation the command exists for. Spec section 6: it rebuilds "from the
+  // photo records S3 already holds".
+  it("rebuilds from the shards in S3 when there is no index at all", async () => {
+    await seed([
+      { schemaVersion: SCHEMA_VERSION, month: "2026-03", photos: [photo("a", "2026-03-14T10:00:00-06:00", true)] },
+      { schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [
+        photo("b", "2026-08-01T10:00:00-06:00"), photo("c", "2026-08-02T10:00:00-06:00")] },
+    ]);
+    await store.delete("data/index.json");
+    await store.delete("data/featured.json");
+
+    const index = await repair(store);
+    expect(index.photoCount).toBe(3);
+    expect(index.months.map((m) => m.month).sort()).toEqual(["2026-03", "2026-08"]);
+    expect(index.featuredCount).toBe(1);
+    expect((await readIndex(store)).photoCount).toBe(3);
+  });
+
+  it("refiles a photo from an unindexed shard by its own takenAt", async () => {
+    // A shard S3 holds but no index lists, whose photo belongs to another month.
+    await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [photo("b", "2026-08-01T10:00:00-06:00")] }]);
+    await store.put(
+      "data/months/2026-03.json",
+      new TextEncoder().encode(JSON.stringify({
+        schemaVersion: SCHEMA_VERSION, month: "2026-03",
+        photos: [photo("a", "2026-05-02T10:00:00-06:00")],
+      })),
+      "application/json", "x",
+    );
+
+    const index = await repair(store);
+    expect(index.months.map((m) => m.month).sort()).toEqual(["2026-05", "2026-08"]);
+    expect((await readMonth(store, "2026-05")).photos[0]!.id).toBe("a");
+    expect((await readMonth(store, "2026-03")).photos).toEqual([]);
+  });
+
+  // Rebuilding around an unreadable shard would silently drop every photo it
+  // holds out of the index — and gc would then see their originals as
+  // unreferenced.
+  it("stops rather than rebuilding without a shard it cannot read", async () => {
+    await seed([{ schemaVersion: SCHEMA_VERSION, month: "2026-08", photos: [photo("b", "2026-08-01T10:00:00-06:00")] }]);
+    await store.put("data/months/2026-03.json", new TextEncoder().encode("{ not json"), "application/json", "x");
+
+    await expect(repair(store)).rejects.toThrow(/2026-03\.json/);
+    expect((await readIndex(store)).photoCount).toBe(1);
   });
 
   it("matches an index built incrementally", async () => {
