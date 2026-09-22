@@ -44,7 +44,7 @@ describe("memory store", () => {
   it("head returns the stored object's size for a key that exists", async () => {
     const s = createMemoryStore();
     await s.put("data/test.bin", body, "application/octet-stream", "x");
-    expect(await s.head("data/test.bin")).toEqual({ size: 3 });
+    expect(await s.head("data/test.bin")).toEqual({ size: body.length });
   });
 
   it("head returns null for a missing key", async () => {
