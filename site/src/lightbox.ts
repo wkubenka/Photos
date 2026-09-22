@@ -30,11 +30,14 @@ export function openLightbox(opts: LightboxOptions): LightboxHandle {
   element.setAttribute("aria-modal", "true");
   element.setAttribute("aria-label", photo.title);
 
+  // The skeleton is static: nothing is interpolated into innerHTML. Photo fields
+  // are free text the photographer typed, and a title containing a double quote
+  // would break out of an attribute — so they are set as DOM properties, which
+  // never re-parse as HTML.
   element.innerHTML = `
     <button class="lightbox-close" type="button" aria-label="Close">×</button>
     <figure>
-      <img src="/${photo.web.path}" alt="${photo.title}"
-           width="${photo.web.w}" height="${photo.web.h}" decoding="async" />
+      <img decoding="async" />
       <figcaption>
         <h2></h2>
         <p class="caption"></p>
@@ -44,6 +47,12 @@ export function openLightbox(opts: LightboxOptions): LightboxHandle {
       </figcaption>
     </figure>
   `;
+  const img = element.querySelector("img") as HTMLImageElement;
+  img.src = `/${photo.web.path}`;
+  img.alt = photo.title;
+  img.width = photo.web.w;
+  img.height = photo.web.h;
+
   element.querySelector("h2")!.textContent = photo.title;
   element.querySelector(".caption")!.textContent = photo.caption;
   element.querySelector(".location")!.textContent = photo.location;
