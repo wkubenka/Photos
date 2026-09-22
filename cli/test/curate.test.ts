@@ -39,6 +39,62 @@ beforeEach(async () => {
   await commit(store, { months, featured: rebuildFeatured(months), index: rebuildIndex(months, null) });
 });
 
+/** The month shards a change actually wrote. */
+async function shardWrites(run: () => Promise<unknown>): Promise<string[]> {
+  const written: string[] = [];
+  const put = store.put.bind(store);
+  store.put = async (key, ...rest) => {
+    if (key.startsWith("data/months/")) written.push(key);
+    return put(key, ...rest);
+  };
+  try {
+    await run();
+  } finally {
+    store.put = put;
+  }
+  return written;
+}
+
+// The library is seeded with two months, so a command that rewrites both
+// fails these. At the spec's stated volume the real cost is ~120 shard PUTs
+// per curation after a decade, each leaving a noncurrent version to linger
+// for 90 days under the lifecycle rule.
+describe("touching only the changed month shard", () => {
+  it("feature writes only the shard holding the photo", async () => {
+    expect(await shardWrites(() => setFeatured(store, ["a"], true)))
+      .toEqual(["data/months/2026-03.json"]);
+    // The untouched month is still counted correctly in the rebuilt index.
+    expect((await readIndex(store)).months.map((m) => m.month).sort())
+      .toEqual(["2026-03", "2026-08"]);
+    expect((await readMonth(store, "2026-08")).photos).toHaveLength(1);
+  });
+
+  it("unfeature writes only the shard holding the photo", async () => {
+    await setFeatured(store, ["b"], true);
+    expect(await shardWrites(() => setFeatured(store, ["b"], false)))
+      .toEqual(["data/months/2026-08.json"]);
+    expect((await readFeatured(store)).photos).toEqual([]);
+  });
+
+  it("feature across two months writes both, and only those", async () => {
+    expect((await shardWrites(() => setFeatured(store, ["a", "b"], true))).sort())
+      .toEqual(["data/months/2026-03.json", "data/months/2026-08.json"]);
+  });
+
+  it("edit writes only the shard holding the photo", async () => {
+    expect(await shardWrites(() => editPhoto(store, "b", { caption: "new" })))
+      .toEqual(["data/months/2026-08.json"]);
+    expect((await readMonth(store, "2026-08")).photos[0]!.caption).toBe("new");
+  });
+
+  it("rm writes only the shard holding the photo", async () => {
+    expect(await shardWrites(() => removePhoto(store, "a")))
+      .toEqual(["data/months/2026-03.json"]);
+    expect((await readMonth(store, "2026-03")).photos).toEqual([]);
+    expect((await readIndex(store)).months.map((m) => m.month)).toEqual(["2026-08"]);
+  });
+});
+
 describe("setFeatured", () => {
   it("flags the photo in its month shard and in featured.json", async () => {
     await setFeatured(store, ["a"], true);
@@ -130,9 +186,13 @@ describe("removePhoto", () => {
     await removePhoto(store, "a");
 
     // Find positions of key milestones
+    // Shard keys are "data/months/2026-03.json", so the old "2026-" prefix
+    // test matched nothing and this assertion was weaker than it read.
     const manifestWrites = operations.filter(
-      (op) => op.op === "put" && (op.key.startsWith("2026-") || op.key === KEYS.index || op.key === KEYS.featured),
+      (op) => op.op === "put"
+        && (op.key.startsWith("data/months/") || op.key === KEYS.index || op.key === KEYS.featured),
     );
+    expect(manifestWrites.some((w) => w.key.startsWith("data/months/"))).toBe(true);
     const keysWrite = operations.find((op) => op.op === "put" && op.key === KEYS.keys);
     const objectDeletes = operations.filter((op) => op.op === "delete" && !op.key.startsWith("data/"));
 
