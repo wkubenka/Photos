@@ -53,6 +53,13 @@ export interface OriginalsOptions {
   // downloaded (never viewed) doesn't leak its blob for the rest of the tab's
   // life.
   onObjectUrl?: (url: string) => void;
+  // Called right after the "Lock" button has locked the controller, so the
+  // host can re-render this slot back into the password prompt. The refill
+  // cannot be driven by an unlock subscription: `shouldRefillOriginalsSlot`
+  // deliberately ignores every transition but "unlocked", because a refill
+  // on "locked" would also fire mid-submit and tear out the form the user
+  // is typing into (see its comment above).
+  onLock?: () => void;
 }
 
 export function renderOriginals(opts: OriginalsOptions): HTMLElement {
@@ -101,9 +108,13 @@ export function renderOriginals(opts: OriginalsOptions): HTMLElement {
   let objectUrl: string | null = null;
 
   const controls = document.createElement("div");
+  // The "Lock" control is the only way to give the derived key back before
+  // the tab closes: without it, unlocking once on a shared or borrowed
+  // machine leaves the key in sessionStorage for the rest of the session.
   controls.innerHTML = `
     <button type="button" data-action="view">View full size</button>
     <button type="button" data-action="download">Download original</button>
+    <button type="button" data-action="lock">Lock</button>
     <progress value="0" max="100" hidden></progress>
     <p class="originals-status" role="status"></p>
   `;
@@ -175,6 +186,11 @@ export function renderOriginals(opts: OriginalsOptions): HTMLElement {
     link.textContent = "Saving…";
     root.append(link);
     link.click();
+  });
+
+  controls.querySelector("[data-action='lock']")!.addEventListener("click", () => {
+    opts.unlock.lock();
+    opts.onLock?.();
   });
 
   return root;

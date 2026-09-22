@@ -181,6 +181,16 @@ function fillOriginals(handle: LightboxHandle, photo: Photo): void {
           const img = handle.element.querySelector("img");
           if (img) img.src = url;
         },
+        // Locking is a state change this module *does* drive directly (a
+        // click on a control it rendered), so re-filling here is safe in a
+        // way that a blanket "locked" subscription would not be: there is no
+        // in-flight submit to tear out. The slot goes back to the password
+        // prompt. Any object URL already behind the lightbox image is left
+        // alone and revoked on close as usual — revoking it here would break
+        // the picture the viewer is currently looking at.
+        onLock() {
+          if (openLightboxState?.handle === handle) fillOriginals(handle, photo);
+        },
       }),
     );
   });

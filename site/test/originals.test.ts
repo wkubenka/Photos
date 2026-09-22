@@ -144,6 +144,29 @@ describe("renderOriginals", () => {
   });
 });
 
+describe("the lock control", () => {
+  // Nothing in site/src used to call lock(), so a derived key sitting in
+  // sessionStorage had no clearing path short of closing the tab.
+  it("locks the controller and asks the host to re-render the slot", () => {
+    const unlock = unlocked();
+    const onLock = vi.fn();
+    const node = renderOriginals(opts({ unlock, onLock }));
+
+    const button = node.querySelector("[data-action='lock']") as HTMLButtonElement;
+    expect(button).not.toBeNull();
+    expect(button.textContent).toBe("Lock");
+
+    button.click();
+    expect(unlock.lock).toHaveBeenCalledTimes(1);
+    expect(onLock).toHaveBeenCalledTimes(1);
+  });
+
+  it("is absent while locked", () => {
+    const node = renderOriginals(opts({ unlock: unlocked("locked") }));
+    expect(node.querySelector("[data-action='lock']")).toBeNull();
+  });
+});
+
 describe("shouldRefillOriginalsSlot", () => {
   it("re-fills only on the transition to unlocked", () => {
     expect(shouldRefillOriginalsSlot({ kind: "unlocked" })).toBe(true);

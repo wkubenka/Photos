@@ -115,12 +115,21 @@ export function createUnlock(deps: UnlockDeps): UnlockController {
         key = candidate;
         set({ kind: "unlocked" });
       } else {
+        // Zeroed before the reference is dropped: this is still a real
+        // Argon2id output derived from the user's password, and dropping the
+        // reference only makes it garbage — it does not make it unreadable.
+        candidate.fill(0);
         deps.storage.removeItem(STORAGE_KEY);
         set({ kind: "locked" });
       }
     },
 
     lock() {
+      // Same reasoning as the rotation-discard path above: clear the bytes,
+      // then drop the reference. Locking is the one action a viewer has to
+      // take back the key short of closing the tab, so it has to actually
+      // destroy it.
+      key?.fill(0);
       key = null;
       deps.storage.removeItem(STORAGE_KEY);
       set({ kind: "locked" });

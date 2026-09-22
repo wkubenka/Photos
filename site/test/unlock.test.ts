@@ -117,6 +117,36 @@ describe("unlock state machine", () => {
     expect(storage.map.size).toBe(0);
   });
 
+  // Dropping the reference makes the key garbage; it does not make it
+  // unreadable. The bytes are zeroed before the reference goes.
+  it("zeroes the key bytes on lock, not just the reference", async () => {
+    const u = createUnlock(deps());
+    await u.submit("the right password");
+    const held = u.masterKey()!;
+    expect(held.some((b) => b !== 0)).toBe(true);
+
+    u.lock();
+    expect([...held]).toEqual([...new Uint8Array(held.length)]);
+  });
+
+  it("zeroes a stored key it discards because it no longer verifies", async () => {
+    const storage = memoryStorage();
+    const u = createUnlock(deps({ storage }));
+    await u.submit("the right password");
+
+    const rotatedKdf = newKdfParams(FAST);
+    const rotatedMaster = await deriveMasterKey("a new password", rotatedKdf);
+    keysFile = { schemaVersion: SCHEMA_VERSION, kdf: rotatedKdf, verifier: await makeVerifier(rotatedMaster), keys: {} };
+
+    // The discarded candidate is not reachable from outside, so this asserts
+    // through the observable consequence: it is gone from storage and the
+    // controller holds nothing.
+    const revived = createUnlock(deps({ storage }));
+    await revived.restore();
+    expect(revived.masterKey()).toBeNull();
+    expect(storage.map.size).toBe(0);
+  });
+
   it("surfaces a keys.json load failure as locked, not as a wrong password", async () => {
     const u = createUnlock(deps({ loadKeys: async () => { throw new Error("network down"); } }));
     await expect(u.submit("the right password")).rejects.toThrow(/network down/);
