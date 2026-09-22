@@ -16,6 +16,7 @@ export interface Header {
 }
 
 export function encodeHeader(h: Header): Uint8Array {
+  if (h.noncePrefix.length !== 4) throw new Error(`invalid nonce prefix: expected 4 bytes, got ${h.noncePrefix.length}`);
   const out = new Uint8Array(HEADER_BYTES);
   out.set(MAGIC, 0);
   out[8] = h.version;
