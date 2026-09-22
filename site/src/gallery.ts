@@ -58,7 +58,10 @@ function grid(photos: Photo[]): HTMLElement {
 
 export function renderHome(root: HTMLElement, photos: Photo[]): void {
   root.replaceChildren();
-  root.append(el("h1", {}, "Selected work"));
+  // tabindex="-1" makes the heading a valid, deliberate place to move focus
+  // to programmatically (e.g. when a lightbox closes into a different view)
+  // without adding it to the normal Tab order.
+  root.append(el("h1", { tabindex: "-1" }, "Selected work"));
   if (photos.length === 0) {
     root.append(el("p", { class: "empty" },
       "There are no featured photos yet. Everything published lives in the archive."));
@@ -71,7 +74,9 @@ export function renderHome(root: HTMLElement, photos: Photo[]): void {
 
 export function renderMonth(root: HTMLElement, month: string, photos: Photo[]): void {
   root.replaceChildren();
-  root.append(el("h1", {}, monthLabel(month)));
+  // See renderHome: tabindex="-1" lets focus move here deliberately without
+  // joining the normal Tab order.
+  root.append(el("h1", { tabindex: "-1" }, monthLabel(month)));
   root.append(el("p", { class: "count" }, `${photos.length} photographs`));
   root.append(grid(photos));
 }
