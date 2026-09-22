@@ -54,3 +54,120 @@ export function chunkAad(
 ): Uint8Array {
   return concat(headerBytes, utf8(photoId), u32be(index), new Uint8Array([isFinal ? 1 : 0]));
 }
+
+export function chunkCountFor(byteLength: number, chunkSize: number): number {
+  return Math.ceil(byteLength / chunkSize);
+}
+
+function expectedBodyLength(h: Header, total: number): number {
+  return total + h.chunkCount * TAG_BYTES;
+}
+
+async function gcmKey(raw: Uint8Array, usages: KeyUsage[]): Promise<CryptoKey> {
+  return globalThis.crypto.subtle.importKey("raw", raw as BufferSource, "AES-GCM", false, usages);
+}
+
+export async function encryptOriginal(
+  plaintext: Uint8Array,
+  dataKey: Uint8Array,
+  photoId: string,
+  opts: { chunkSize?: number } = {},
+): Promise<Uint8Array> {
+  if (plaintext.length === 0) throw new Error("refusing to encrypt an empty file");
+  const chunkSize = opts.chunkSize ?? CHUNK_SIZE;
+  const chunkCount = chunkCountFor(plaintext.length, chunkSize);
+  const noncePrefix = new Uint8Array(4);
+  globalThis.crypto.getRandomValues(noncePrefix);
+
+  const headerBytes = encodeHeader({
+    version: FORMAT_VERSION,
+    cipherId: CIPHER_AES_256_GCM,
+    chunkSize,
+    chunkCount,
+    noncePrefix,
+  });
+
+  const key = await gcmKey(dataKey, ["encrypt"]);
+  const parts: Uint8Array[] = [headerBytes];
+
+  for (let i = 0; i < chunkCount; i++) {
+    const slice = plaintext.subarray(i * chunkSize, Math.min((i + 1) * chunkSize, plaintext.length));
+    const isFinal = i === chunkCount - 1;
+    const ct = await globalThis.crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv: chunkNonce(noncePrefix, i) as BufferSource,
+        additionalData: chunkAad(headerBytes, photoId, i, isFinal) as BufferSource,
+        tagLength: 128,
+      },
+      key,
+      slice as BufferSource,
+    );
+    parts.push(new Uint8Array(ct));
+  }
+
+  return concat(...parts);
+}
+
+export async function decryptOriginal(
+  container: Uint8Array,
+  dataKey: Uint8Array,
+  photoId: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<Uint8Array> {
+  const headerBytes = container.slice(0, HEADER_BYTES);
+  const h = decodeHeader(headerBytes);
+
+  const body = container.length - HEADER_BYTES;
+  const tagOverhead = h.chunkCount * TAG_BYTES;
+  const plainTotal = body - tagOverhead;
+  if (plainTotal <= 0) throw new Error("container body length is impossible for its chunk count");
+  if (chunkCountFor(plainTotal, h.chunkSize) !== h.chunkCount) {
+    throw new Error("container body length disagrees with the header chunk count");
+  }
+
+  // Validate the actual chunk boundaries match expectations
+  let expectedReadAt = HEADER_BYTES;
+  for (let i = 0; i < h.chunkCount; i++) {
+    const isFinal = i === h.chunkCount - 1;
+    const plainLen = isFinal ? plainTotal - (i * h.chunkSize) : h.chunkSize;
+    expectedReadAt += plainLen + TAG_BYTES;
+  }
+  if (container.length !== expectedReadAt) {
+    throw new Error("container body length disagrees with the header");
+  }
+
+  const key = await gcmKey(dataKey, ["decrypt"]);
+  const out = new Uint8Array(plainTotal);
+  let readAt = HEADER_BYTES;
+  let wroteAt = 0;
+
+  for (let i = 0; i < h.chunkCount; i++) {
+    const isFinal = i === h.chunkCount - 1;
+    const plainLen = isFinal ? plainTotal - wroteAt : h.chunkSize;
+    const slice = container.subarray(readAt, readAt + plainLen + TAG_BYTES);
+    try {
+      const plain = await globalThis.crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: chunkNonce(h.noncePrefix, i) as BufferSource,
+          additionalData: chunkAad(headerBytes, photoId, i, isFinal) as BufferSource,
+          tagLength: 128,
+        },
+        key,
+        slice as BufferSource,
+      );
+      out.set(new Uint8Array(plain), wroteAt);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("operation")) {
+        throw new Error("decryption failed: container body length or data is corrupted");
+      }
+      throw err;
+    }
+    readAt += plainLen + TAG_BYTES;
+    wroteAt += plainLen;
+    onProgress?.(wroteAt, plainTotal);
+  }
+
+  return out;
+}
