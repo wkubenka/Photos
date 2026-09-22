@@ -75,6 +75,17 @@ export async function removePhoto(store: Store, id: string): Promise<void> {
 
   const next = replacePhoto(months, id, () => null);
 
+  // Commit the manifest first: removes the photo reference from months/index.
+  // An orphaned key or object is harmless; a manifest pointing at missing
+  // objects is broken.
+  await commit(store, {
+    months: next,
+    featured: rebuildFeatured(next),
+    index: rebuildIndex(next, lastBackupAt),
+  });
+
+  // Then drop the key entry so the photo cannot be decrypted if its objects
+  // happen to be restored.
   const keysBytes = await store.get(KEYS.keys);
   if (keysBytes) {
     const keysFile = KeysFileSchema.parse(JSON.parse(new TextDecoder().decode(keysBytes)));
@@ -86,12 +97,6 @@ export async function removePhoto(store: Store, id: string): Promise<void> {
       CACHE_SHORT,
     );
   }
-
-  await commit(store, {
-    months: next,
-    featured: rebuildFeatured(next),
-    index: rebuildIndex(next, lastBackupAt),
-  });
 
   // Objects are deleted last: an orphaned object is harmless, a manifest
   // pointing at a deleted object is not.

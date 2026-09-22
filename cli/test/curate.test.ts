@@ -57,6 +57,18 @@ describe("setFeatured", () => {
     await expect(setFeatured(store, ["nope"], true)).rejects.toThrow(/nope/);
     expect((await readFeatured(store)).photos).toEqual([]);
   });
+
+  it("all-or-nothing: mixed valid and invalid ids leaves valid ones unchanged", async () => {
+    await setFeatured(store, ["a"], true);
+    const beforeAttempt = (await readMonth(store, "2026-03")).photos[0]!.featured;
+    expect(beforeAttempt).toBe(true);
+
+    await expect(setFeatured(store, ["a", "nope"], false)).rejects.toThrow(/nope/);
+
+    const afterFailedAttempt = (await readMonth(store, "2026-03")).photos[0]!.featured;
+    expect(afterFailedAttempt).toBe(true);
+    expect((await readFeatured(store)).photos.map((p) => p.id)).toEqual(["a"]);
+  });
 });
 
 describe("editPhoto", () => {
@@ -98,5 +110,42 @@ describe("removePhoto", () => {
     await setFeatured(store, ["a"], true);
     await removePhoto(store, "a");
     expect((await readFeatured(store)).photos).toEqual([]);
+  });
+
+  it("writes in the correct order: manifest, then keys, then objects", async () => {
+    const operations: Array<{ op: "put" | "delete"; key: string }> = [];
+    const originalPut = store.put.bind(store);
+    const originalDelete = store.delete.bind(store);
+
+    store.put = async (key, ...rest) => {
+      operations.push({ op: "put", key });
+      return originalPut(key, ...rest);
+    };
+
+    store.delete = async (key) => {
+      operations.push({ op: "delete", key });
+      return originalDelete(key);
+    };
+
+    await removePhoto(store, "a");
+
+    // Find positions of key milestones
+    const manifestWrites = operations.filter(
+      (op) => op.op === "put" && (op.key.startsWith("2026-") || op.key === KEYS.index || op.key === KEYS.featured),
+    );
+    const keysWrite = operations.find((op) => op.op === "put" && op.key === KEYS.keys);
+    const objectDeletes = operations.filter((op) => op.op === "delete" && !op.key.startsWith("data/"));
+
+    // All manifest writes must precede keys.json write
+    expect(manifestWrites.length).toBeGreaterThan(0);
+    expect(keysWrite).toBeDefined();
+    expect(objectDeletes.length).toBeGreaterThan(0);
+
+    const lastManifestIndex = Math.max(...manifestWrites.map((w) => operations.indexOf(w)));
+    const keysIndex = operations.indexOf(keysWrite!);
+    const firstObjectDeleteIndex = Math.min(...objectDeletes.map((d) => operations.indexOf(d)));
+
+    expect(lastManifestIndex).toBeLessThan(keysIndex);
+    expect(keysIndex).toBeLessThan(firstObjectDeleteIndex);
   });
 });
