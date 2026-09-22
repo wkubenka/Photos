@@ -25,11 +25,49 @@ describe("thumbnail", () => {
     expect(img.getAttribute("height")).toBe("427");
   });
 
-  it("lazy-loads and uses the lqip as a background placeholder", () => {
-    const fig = thumbnail(photo("a", "2026-03-14T10:00:00-06:00"));
+  // The placeholder cannot ride on an inline `style` attribute: the page
+  // ships `style-src 'self'` with no `'unsafe-inline'`, and `style-src-attr`
+  // falls back to `style-src`, so the browser drops the attribute on every
+  // thumbnail. jsdom does not enforce CSP, so asserting the attribute is
+  // present proved nothing about whether it renders. These assert the
+  // mechanism actually shipped: a class plus a CSSOM-inserted rule, which
+  // CSP does not block.
+  it("lazy-loads and paints the lqip through a stylesheet rule, not an inline style", () => {
+    const fig = thumbnail(photo("lqip-one", "2026-03-14T10:00:00-06:00"));
     const img = fig.querySelector("img")!;
     expect(img.getAttribute("loading")).toBe("lazy");
-    expect(fig.getAttribute("style")).toContain("data:image/jpeg;base64,aa");
+
+    expect(fig.getAttribute("style")).toBeNull();
+    const lqipClass = Array.from(fig.classList).find((c) => c.startsWith("lqip-"));
+    expect(lqipClass).toBeDefined();
+
+    const rules = Array.from(document.styleSheets).flatMap((sheet) => Array.from(sheet.cssRules));
+    const rule = rules.find((r) => r.cssText.includes(`.${lqipClass}`))!;
+    expect(rule).toBeDefined();
+    expect(rule.cssText).toContain("data:image/jpeg;base64,aa");
+    expect(rule.cssText).toContain("background-image");
+  });
+
+  it("reuses one rule per photo across re-renders", () => {
+    const p = photo("lqip-repeat", "2026-03-14T10:00:00-06:00");
+    const first = thumbnail(p).className;
+    const second = thumbnail(p).className;
+    expect(second).toBe(first);
+    const lqipClass = first.split(" ").find((c) => c.startsWith("lqip-"))!;
+    const matching = Array.from(document.styleSheets)
+      .flatMap((sheet) => Array.from(sheet.cssRules))
+      .filter((r) => r.cssText.includes(`.${lqipClass}`));
+    expect(matching).toHaveLength(1);
+  });
+
+  it("renders the thumbnail without a placeholder rather than injecting an unrecognised lqip", () => {
+    const p = photo("lqip-bad", "2026-03-14T10:00:00-06:00");
+    p.lqip = "url(javascript:alert(1))";
+    const fig = thumbnail(p);
+    expect(Array.from(fig.classList)).toEqual(["thumb"]);
+    expect(fig.querySelector("img")).not.toBeNull();
+    const rules = Array.from(document.styleSheets).flatMap((sheet) => Array.from(sheet.cssRules));
+    expect(rules.some((r) => r.cssText.includes("javascript:"))).toBe(false);
   });
 
   it("uses the title as alt text and the caption as the description", () => {

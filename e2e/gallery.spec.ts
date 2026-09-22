@@ -50,6 +50,28 @@ test("browse, unlock, and download an original", async ({ page }) => {
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
+// The one assertion a unit test cannot make: jsdom does not enforce CSP.
+// The lqip used to ride on an inline `style` attribute, which this page's
+// `style-src 'self'` silently drops — so every thumbnail rendered with no
+// placeholder at all while the test suite reported it present.
+test("the lqip placeholder paints under the shipped CSP", async ({ page }) => {
+  const violations: string[] = [];
+  page.on("console", (msg) => {
+    if (/Content Security Policy/i.test(msg.text())) violations.push(msg.text());
+  });
+
+  await page.goto("/?m=2026-03");
+  const figure = page.locator("figure").first();
+  await expect(figure).toBeVisible();
+
+  const background = await figure.evaluate((el) => getComputedStyle(el).backgroundImage);
+  expect(background).toMatch(/^url\("?data:image\/jpeg;base64,/);
+  // Nothing the page does to paint it trips the policy. (frame-ancestors is
+  // ignored in a meta tag by every browser and is reported here for that
+  // reason alone; the CloudFront response header is where it takes effect.)
+  expect(violations.filter((v) => !/frame-ancestors/.test(v))).toEqual([]);
+});
+
 test("the gallery still browses without unlocking", async ({ page }) => {
   await page.goto("/?m=2026-03");
   await expect(page.locator("figure").first()).toBeVisible();

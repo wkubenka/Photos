@@ -20,6 +20,81 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+// The lqip must not travel as an inline `style` attribute. This page ships
+// `style-src 'self'` with no `'unsafe-inline'` (both in the meta tag and in
+// the CloudFront response headers policy), and `style-src-attr` falls back
+// to `style-src`, so the browser drops the attribute on every thumbnail and
+// no placeholder ever renders. Weakening the policy is not an option: it is
+// what protects a page holding a derived key in sessionStorage.
+//
+// A rule inserted through the CSSOM is not inline content and is not
+// subject to that restriction, so each photo gets a generated class and one
+// rule in a stylesheet this module owns.
+//
+// That stylesheet is a *constructable* one, adopted by the document. An
+// empty <style> element is not a way around the policy: Chromium blocks the
+// element itself and names the empty string's own hash in the violation, so
+// its `.sheet` never joins the document and no rule in it ever applies.
+// A constructable sheet is not inline content at all and is not checked.
+// Engines without `adoptedStyleSheets` (jsdom, notably) fall back to a
+// <style> element, which works wherever there is no CSP enforcing this.
+const LQIP_DATA_URI = /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+
+let lqipSheet: CSSStyleSheet | null | undefined;
+const lqipClasses = new Map<string, string>();
+
+function lqipStyleSheet(): CSSStyleSheet | null {
+  if (lqipSheet !== undefined) return lqipSheet;
+  lqipSheet = null;
+
+  if ("adoptedStyleSheets" in document && typeof CSSStyleSheet === "function") {
+    try {
+      const sheet = new CSSStyleSheet();
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      lqipSheet = sheet;
+      return lqipSheet;
+    } catch {
+      // Fall through to the <style> element below.
+    }
+  }
+
+  const style = document.createElement("style");
+  document.head.append(style);
+  // null when the CSP blocked the element: thumbnails then render with no
+  // placeholder, which is the same graceful degradation as a malformed lqip.
+  lqipSheet = style.sheet;
+  return lqipSheet;
+}
+
+/**
+ * The class that paints this photo's lqip, or null if it cannot be painted
+ * (a malformed lqip, or no stylesheet to insert into). One rule per photo,
+ * reused across re-renders so browsing back and forth does not grow the
+ * sheet.
+ */
+export function lqipClassFor(photo: Photo): string | null {
+  const existing = lqipClasses.get(photo.id);
+  if (existing !== undefined) return existing;
+  // Defence in depth behind PhotoSchema, which pins lqip to this same shape:
+  // this is the one manifest string that reaches a CSS context.
+  if (!LQIP_DATA_URI.test(photo.lqip)) return null;
+
+  const sheet = lqipStyleSheet();
+  if (!sheet) return null;
+
+  const className = `lqip-${lqipClasses.size}`;
+  try {
+    sheet.insertRule(
+      `.${className}{background-image:url("${photo.lqip}");background-size:cover;}`,
+      sheet.cssRules.length,
+    );
+  } catch {
+    return null;
+  }
+  lqipClasses.set(photo.id, className);
+  return className;
+}
+
 export function thumbnail(photo: Photo): HTMLElement {
   const month = monthOf(photo.takenAt);
   const href = viewToSearch({ kind: "photo", id: photo.id, month });
@@ -33,10 +108,10 @@ export function thumbnail(photo: Photo): HTMLElement {
     decoding: "async",
   });
 
+  // The lqip sits behind the image so there is no flash of empty space.
+  const lqipClass = lqipClassFor(photo);
   const figure = el("figure", {
-    class: "thumb",
-    // The lqip sits behind the image so there is no flash of empty space.
-    style: `background-image:url(${photo.lqip});background-size:cover;`,
+    class: lqipClass ? `thumb ${lqipClass}` : "thumb",
   });
   figure.append(el("a", { href, "data-photo": photo.id }, img));
   // The alt text is the title; the caption becomes the figure's accessible
