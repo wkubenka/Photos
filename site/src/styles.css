@@ -19,3 +19,22 @@ body {
   text-decoration: none;
   color: inherit;
 }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 1rem;
+}
+
+.thumb {
+  margin: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 300px;
+}
+
+.thumb img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
