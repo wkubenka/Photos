@@ -86,3 +86,45 @@ describe("writeRights", () => {
     expect(Number(tags.GPSLongitude)).toBeCloseTo(-103.6, 3);
   }, 30_000);
 });
+
+describe("writeRights with incomplete camera EXIF", () => {
+  // readExif (Task 11) emits "" for aperture/focalLength/shutter whenever the
+  // source camera didn't report them (manual/adapted lens, incomplete EXIF),
+  // and the schema allows it. An absent value must not become a fabricated
+  // zero, and must not fail the whole photo.
+  it("omits FNumber entirely when aperture is blank, rather than publishing without it", async () => {
+    const incomplete = { ...photo, exif: { ...photo.exif, aperture: "" } };
+    const tags = await tagsOf(await writeRights(await blank(), incomplete, config)) as Record<string, unknown>;
+    expect(tags.FNumber).toBeUndefined();
+  }, 30_000);
+
+  it("omits FocalLength entirely when focalLength is blank", async () => {
+    const incomplete = { ...photo, exif: { ...photo.exif, focalLength: "" } };
+    const tags = await tagsOf(await writeRights(await blank(), incomplete, config)) as Record<string, unknown>;
+    expect(tags.FocalLength).toBeUndefined();
+  }, 30_000);
+
+  it("omits ExposureTime entirely when shutter is blank, never writing a zero", async () => {
+    const incomplete = { ...photo, exif: { ...photo.exif, shutter: "" } };
+    const tags = await tagsOf(await writeRights(await blank(), incomplete, config)) as Record<string, unknown>;
+    expect(tags.ExposureTime).toBeUndefined();
+    expect(tags.ExposureTime).not.toBe(0);
+  }, 30_000);
+
+  it("still writes rights fields and all three opt-out signals when all three camera values are blank", async () => {
+    const bare = { ...photo, exif: { ...photo.exif, aperture: "", focalLength: "", shutter: "" } };
+    const tags = await tagsOf(await writeRights(await blank(), bare, config)) as Record<string, unknown>;
+    expect(tags.FNumber).toBeUndefined();
+    expect(tags.FocalLength).toBeUndefined();
+    expect(tags.ExposureTime).toBeUndefined();
+    expect(String(tags.Rights ?? tags.CopyrightNotice)).toContain("2026 William Kubenka");
+    expect(String(tags.Robots)).toBe("noai, noimageai");
+    expect(String(tags.DigitalSourceType)).toContain("digitalCapture");
+    expect(String(tags.Reservation)).toBe("1");
+  }, 30_000);
+
+  it("still throws on a non-empty but unparseable aperture", async () => {
+    const bad = { ...photo, exif: { ...photo.exif, aperture: "wide open" } };
+    await expect(writeRights(await blank(), bad, config)).rejects.toThrow(/aperture/i);
+  }, 30_000);
+});

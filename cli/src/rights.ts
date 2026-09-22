@@ -42,24 +42,43 @@ export interface RightsInput {
 // The schema stores aperture/shutter/focal length as photographer-facing
 // display strings ("f/8", "1/60", "23mm"); EXIF wants them as numbers (an
 // f-number, a ratio of seconds, millimeters). These convert one way, from
-// display string to the numeric value exiftool expects, and throw with the
-// offending value on anything that doesn't parse — silently dropping a
-// malformed value would be exactly the accidental-loss failure mode this
-// module exists to prevent.
-function parseFNumber(aperture: string): number {
-  const m = /^f\/?\s*([\d.]+)$/i.exec(aperture.trim());
+// display string to the numeric value exiftool expects.
+//
+// Absent is not the same as unparseable: readExif (Task 11) emits "" for
+// aperture/focalLength whenever the source file's camera didn't report them
+// (a manual/adapted lens, incomplete EXIF), and the schema allows it (a bare
+// z.string(), not .min(1), for exactly these three fields). A blank or
+// whitespace-only value returns `undefined` so the caller can omit that tag
+// entirely rather than write a fabricated zero or fail the whole photo.
+// A *non-empty* value that still doesn't parse is a real bug — that's a
+// camera field we have but can't understand — so that throws, with the
+// offending value in the message, same as before.
+function parseFNumber(aperture: string): number | undefined {
+  const trimmed = aperture.trim();
+  if (trimmed === "") return undefined;
+  const m = /^f\/?\s*([\d.]+)$/i.exec(trimmed);
   if (!m) throw new Error(`cannot parse aperture as an f-number: ${JSON.stringify(aperture)}`);
   return Number(m[1]);
 }
 
-function parseFocalLengthMm(focalLength: string): number {
-  const m = /^([\d.]+)\s*mm$/i.exec(focalLength.trim());
+function parseFocalLengthMm(focalLength: string): number | undefined {
+  const trimmed = focalLength.trim();
+  if (trimmed === "") return undefined;
+  const m = /^([\d.]+)\s*mm$/i.exec(trimmed);
   if (!m) throw new Error(`cannot parse focal length in mm: ${JSON.stringify(focalLength)}`);
   return Number(m[1]);
 }
 
-function parseExposureSeconds(shutter: string): number {
+// exiftool's own PrintExposureTime (Exif.pm) only ever emits a fraction
+// ("1/60") for exposures under ~0.25s, or a plain decimal with no unit
+// ("2", "2.5", "30") otherwise — never a trailing "s" or other suffix.
+// Checked directly against the vendored binary for 2, 2.5, 30, 0.5, 13 and
+// 1/1000: all came back exactly as written, no unit. So a fraction or a
+// bare decimal are the only two shapes readExif can hand back; no other
+// format needs to be handled here.
+function parseExposureSeconds(shutter: string): number | undefined {
   const trimmed = shutter.trim();
+  if (trimmed === "") return undefined;
   const fraction = /^([\d.]+)\s*\/\s*([\d.]+)$/.exec(trimmed);
   if (fraction) {
     const [, num, den] = fraction;
@@ -117,11 +136,19 @@ export async function writeRights(
       "EXIF:Model": photo.exif.camera,
       "EXIF:LensModel": photo.exif.lens,
       "EXIF:ISO": photo.exif.iso,
-      "EXIF:FocalLength": parseFocalLengthMm(photo.exif.focalLength),
-      "EXIF:FNumber": parseFNumber(photo.exif.aperture),
-      "EXIF:ExposureTime": parseExposureSeconds(photo.exif.shutter),
       "EXIF:DateTimeOriginal": photo.takenAt,
     };
+
+    // Omitted entirely (not set to `undefined`) when the source photo never
+    // had the value, rather than writing a fabricated zero or an empty tag.
+    const focalLength = parseFocalLengthMm(photo.exif.focalLength);
+    if (focalLength !== undefined) tags["EXIF:FocalLength"] = focalLength;
+
+    const fNumber = parseFNumber(photo.exif.aperture);
+    if (fNumber !== undefined) tags["EXIF:FNumber"] = fNumber;
+
+    const exposureTime = parseExposureSeconds(photo.exif.shutter);
+    if (exposureTime !== undefined) tags["EXIF:ExposureTime"] = exposureTime;
 
     if (opts.gps) {
       tags["EXIF:GPSLatitude"] = opts.gps.lat;
