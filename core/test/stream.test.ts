@@ -59,7 +59,7 @@ describe("stream decryptor", () => {
     const enc = await encryptOriginal(bytes(200), key, ID, { chunkSize: SMALL });
     const byte = enc[30]!;
     enc[30] = byte ^ 0x01;
-    await expect(feed(enc, key, 1000)).rejects.toThrow();
+    await expect(feed(enc, key, 1000)).rejects.toThrow(/failed authentication/);
   });
 
   it("throws if the stream ends early", async () => {
@@ -68,5 +68,14 @@ describe("stream decryptor", () => {
     const d = createStreamDecryptor(key, ID, enc.length);
     await d.push(enc.subarray(0, 100));
     await expect(d.finish()).rejects.toThrow(/incomplete/i);
+  });
+
+  it("throws on trailing bytes after the final chunk", async () => {
+    const key = newDataKey();
+    const enc = await encryptOriginal(bytes(200), key, ID, { chunkSize: SMALL });
+    const withTrailing = concat(enc, bytes(5));
+    const d = createStreamDecryptor(key, ID, enc.length);
+    await d.push(withTrailing);
+    await expect(d.finish()).rejects.toThrow(/trailing bytes/);
   });
 });

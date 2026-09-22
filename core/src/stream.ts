@@ -51,17 +51,22 @@ export function createStreamDecryptor(
       const need = plainLen + TAG_BYTES;
       if (buffer.length < need) break;
 
-      const plain = await globalThis.crypto.subtle.decrypt(
-        {
-          name: "AES-GCM",
-          iv: chunkNonce(h.noncePrefix, nextChunk) as BufferSource,
-          additionalData: chunkAad(headerBytes!, photoId, nextChunk, isFinal) as BufferSource,
-          tagLength: 128,
-        },
-        await ensureKey(),
-        buffer.subarray(0, need) as BufferSource,
-      );
-      out.push(new Uint8Array(plain as ArrayBuffer));
+      let plain: ArrayBuffer;
+      try {
+        plain = await globalThis.crypto.subtle.decrypt(
+          {
+            name: "AES-GCM",
+            iv: chunkNonce(h.noncePrefix, nextChunk) as BufferSource,
+            additionalData: chunkAad(headerBytes!, photoId, nextChunk, isFinal) as BufferSource,
+            tagLength: 128,
+          },
+          await ensureKey(),
+          buffer.subarray(0, need) as BufferSource,
+        );
+      } catch {
+        throw new Error(`chunk ${nextChunk} failed authentication`);
+      }
+      out.push(new Uint8Array(plain));
       buffer = concat(buffer.subarray(need));
       nextChunk++;
     }
