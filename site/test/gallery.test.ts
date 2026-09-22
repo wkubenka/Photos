@@ -33,8 +33,17 @@ describe("thumbnail", () => {
   });
 
   it("uses the title as alt text and the caption as the description", () => {
-    const img = thumbnail(photo("a", "2026-03-14T10:00:00-06:00")).querySelector("img")!;
+    const fig = thumbnail(photo("a", "2026-03-14T10:00:00-06:00"));
+    const img = fig.querySelector("img")!;
     expect(img.getAttribute("alt")).toBe("Title a");
+    expect(fig.querySelector("figcaption")!.textContent).toBe("Caption a");
+  });
+
+  it("omits the figcaption entirely when there is no caption", () => {
+    const p = photo("a", "2026-03-14T10:00:00-06:00");
+    p.caption = "";
+    const fig = thumbnail(p);
+    expect(fig.querySelector("figcaption")).toBeNull();
   });
 
   it("links to the photo with its month", () => {

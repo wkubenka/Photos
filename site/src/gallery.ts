@@ -1,4 +1,4 @@
-import type { MonthEntry, Photo } from "@photos/core";
+import { monthOf, type MonthEntry, type Photo } from "@photos/core";
 import { viewToSearch } from "./urlstate.js";
 
 const MONTH_NAMES = [
@@ -21,7 +21,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
 }
 
 export function thumbnail(photo: Photo): HTMLElement {
-  const month = photo.takenAt.slice(0, 7);
+  const month = monthOf(photo.takenAt);
   const href = viewToSearch({ kind: "photo", id: photo.id, month });
 
   const img = el("img", {
@@ -39,6 +39,14 @@ export function thumbnail(photo: Photo): HTMLElement {
     style: `background-image:url(${photo.lqip});background-size:cover;`,
   });
   figure.append(el("a", { href, "data-photo": photo.id }, img));
+  // The alt text is the title; the caption becomes the figure's accessible
+  // description via the native figure/figcaption relationship (figcaption
+  // must be a direct child of figure), so no aria-describedby or id wiring
+  // is needed. Visually hidden but present for screen readers. Skipped
+  // entirely when there is no caption, since an empty description is noise.
+  if (photo.caption !== "") {
+    figure.append(el("figcaption", { class: "visually-hidden" }, photo.caption));
+  }
   return figure;
 }
 
