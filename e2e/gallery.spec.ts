@@ -24,6 +24,7 @@ test("browse, unlock, and download an original", async ({ page }) => {
   await page.getByLabel(/Have the password/).fill("not the password");
   await page.getByRole("button", { name: "Unlock originals" }).click();
   await expect(page.getByText("That password is not right.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download original" })).toHaveCount(0);
 
   // The right password unlocks.
   await page.getByLabel(/Have the password/).fill(PASSWORD);
