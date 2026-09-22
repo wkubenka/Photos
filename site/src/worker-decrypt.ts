@@ -14,7 +14,16 @@ export interface DecryptRequest {
 export type DecryptEvent =
   | { type: "progress"; done: number; total: number }
   | { type: "decrypted"; bytes: Uint8Array }
-  | { type: "error"; message: string };
+  | { type: "error"; kind: "download" | "decrypt"; message: string };
+
+// Marks an error as belonging to the fetch/stream side of this loop (the
+// initial request, a non-OK response, or the stream failing mid-transfer)
+// rather than the decryptor (a chunk failing its GCM tag). This is
+// structural, not a match on `err.message`: the site's own worker raises
+// it at the exact point a failure is known to be one or the other, so the
+// distinction never depends on what a particular platform's error text
+// happens to say.
+class DownloadFailure extends Error {}
 
 export async function runDecrypt(
   req: DecryptRequest,
@@ -22,8 +31,13 @@ export async function runDecrypt(
   emit: (event: DecryptEvent) => void,
 ): Promise<void> {
   try {
-    const res = await fetchFn(req.url);
-    if (!res.ok || !res.body) throw new Error(`could not download the original (${res.status})`);
+    let res: Response;
+    try {
+      res = await fetchFn(req.url);
+    } catch (err) {
+      throw new DownloadFailure((err as Error).message);
+    }
+    if (!res.ok || !res.body) throw new DownloadFailure(`could not download the original (${res.status})`);
 
     const decryptor = createStreamDecryptor(req.dataKey, req.photoId, req.containerLength);
     const reader = res.body.getReader();
@@ -31,9 +45,15 @@ export async function runDecrypt(
     let done = 0;
 
     for (;;) {
-      const { value, done: finished } = await reader.read();
+      let value: Uint8Array | undefined;
+      let finished: boolean;
+      try {
+        ({ value, done: finished } = await reader.read());
+      } catch (err) {
+        throw new DownloadFailure((err as Error).message);
+      }
       if (finished) break;
-      for (const out of await decryptor.push(value)) {
+      for (const out of await decryptor.push(value!)) {
         pieces.push(out);
         done += out.length;
         emit({ type: "progress", done, total: decryptor.plainTotal ?? 0 });
@@ -51,6 +71,7 @@ export async function runDecrypt(
     for (const p of pieces) { bytes.set(p, at); at += p.length; }
     emit({ type: "decrypted", bytes });
   } catch (err) {
-    emit({ type: "error", message: (err as Error).message });
+    const kind = err instanceof DownloadFailure ? "download" : "decrypt";
+    emit({ type: "error", kind, message: (err as Error).message });
   }
 }

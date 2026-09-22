@@ -2,7 +2,7 @@ import { createLibrary } from "./library.js";
 import { navigate, onNavigate, parseView } from "./urlstate.js";
 import { createApp } from "./app.js";
 import { createUnlock, defaultSupported } from "./unlock.js";
-import { renderOriginals } from "./originals.js";
+import { renderOriginals, DecryptFailure, shouldRefillOriginalsSlot } from "./originals.js";
 import { KeysFileSchema, unwrapDataKey, type KdfParams, type KeysFile, type Photo } from "@photos/core";
 import type { LightboxHandle } from "./lightbox.js";
 
@@ -23,7 +23,10 @@ type WorkerEvent =
   | { type: "derived"; key: Uint8Array }
   | { type: "progress"; done: number; total: number }
   | { type: "decrypted"; bytes: Uint8Array }
-  | { type: "error"; message: string };
+  // `kind` is only ever present on an error from a "decrypt" request — the
+  // worker's own "derive" errors have no download/decrypt split to make —
+  // so it's optional here rather than carried on a second error shape.
+  | { type: "error"; kind?: "download" | "decrypt"; message: string };
 
 let workerQueue: Promise<unknown> = Promise.resolve();
 function onWorker<T>(run: () => Promise<T>): Promise<T> {
@@ -72,7 +75,10 @@ function decryptViaWorker(
             resolve(msg.bytes);
           } else if (msg.type === "error") {
             worker.removeEventListener("message", onMessage);
-            reject(new Error(msg.message));
+            // Every "decrypt" request's error carries a `kind`; fall back to
+            // "decrypt" only as a defensive default, never as a guess drawn
+            // from the message text.
+            reject(new DecryptFailure(msg.kind ?? "decrypt", msg.message));
           }
         }
         worker.addEventListener("message", onMessage);
@@ -136,16 +142,18 @@ void unlock.restore();
 
 // --- filling the lightbox's "originals" slot --------------------------------
 //
-// At most one decrypted object URL is ever alive: it backs the lightbox's
-// <img> the moment "View full size" produces one, and is revoked the moment
-// it stops being that image — either because a new one replaces it or the
-// lightbox goes away. A 40 MB blob per photo viewed, never released, is a
-// real leak on a long browsing session.
-let currentImageUrl: string | null = null;
-function revokeCurrentImageUrl(): void {
-  if (currentImageUrl) {
-    URL.revokeObjectURL(currentImageUrl);
-    currentImageUrl = null;
+// At most one decrypted object URL is ever alive: `onObjectUrl` fires the
+// moment `originals.ts` creates one, from *either* the "view" or the
+// "download" path (whichever gets there first) — not only the one that
+// also happens to call `onImage`. It is revoked the moment it stops being
+// current — either a new one replaces it, or the lightbox goes away. A
+// 40 MB blob per photo, viewed or merely downloaded and never released, is
+// a real leak on a long browsing session.
+let currentObjectUrl: string | null = null;
+function revokeCurrentObjectUrl(): void {
+  if (currentObjectUrl) {
+    URL.revokeObjectURL(currentObjectUrl);
+    currentObjectUrl = null;
   }
 }
 
@@ -165,9 +173,11 @@ function fillOriginals(handle: LightboxHandle, photo: Photo): void {
         unwrap: unwrapDataKey,
         decrypt: decryptViaWorker,
         sha256,
+        onObjectUrl(url) {
+          revokeCurrentObjectUrl();
+          currentObjectUrl = url;
+        },
         onImage(url) {
-          revokeCurrentImageUrl();
-          currentImageUrl = url;
           const img = handle.element.querySelector("img");
           if (img) img.src = url;
         },
@@ -189,7 +199,7 @@ function fillOriginals(handle: LightboxHandle, photo: Photo): void {
 // state change would, including "deriving" the instant submit() starts)
 // would drop the "Checking…" status and the password the user just typed.
 unlock.subscribe((state) => {
-  if (state.kind === "unlocked" && openLightboxState) {
+  if (shouldRefillOriginalsSlot(state) && openLightboxState) {
     fillOriginals(openLightboxState.handle, openLightboxState.photo);
   }
 });
@@ -203,7 +213,7 @@ const instance = createApp(library, {
   },
   onLightboxClose() {
     openLightboxState = null;
-    revokeCurrentImageUrl();
+    revokeCurrentObjectUrl();
   },
 });
 

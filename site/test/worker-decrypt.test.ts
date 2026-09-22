@@ -87,16 +87,60 @@ describe("runDecrypt", () => {
     expect(events.some((e) => e.type === "decrypted")).toBe(false);
     const error = events.find((e): e is ErrorEvent => e.type === "error");
     expect(error).toBeDefined();
+    expect(error!.kind).toBe("decrypt");
     expect(error!.message).toMatch(/failed authentication/);
   });
 
-  it("emits an error when the download itself fails", async () => {
+  it("emits a download-kind error when the download itself fails", async () => {
     const events: DecryptEvent[] = [];
     await runDecrypt(
       { url: "https://example.test/missing", dataKey: newDataKey(), photoId: "photo-1", containerLength: 100 },
       fakeFetch(null, { ok: false, status: 404 }),
       (e) => events.push(e),
     );
-    expect(events).toEqual([{ type: "error", message: "could not download the original (404)" }]);
+    expect(events).toEqual([
+      { type: "error", kind: "download", message: "could not download the original (404)" },
+    ]);
+  });
+
+  // A chunk failing its GCM tag and the network dropping mid-transfer both
+  // surface as an "error" event, but a viewer whose connection blipped
+  // should not be told their photograph may have been tampered with — the
+  // two need different `kind`s so the UI can tell them apart. This is what
+  // distinguishes a stream that errors after already delivering some bytes
+  // (download) from one that delivers a corrupted chunk the decryptor itself
+  // rejects (decrypt).
+  it("emits a download-kind error, not a decrypt-kind one, when the stream fails mid-transfer", async () => {
+    const dataKey = newDataKey();
+    const photoId = "photo-1";
+    const plaintext = new TextEncoder().encode("m".repeat(200));
+    const container = await encryptOriginal(plaintext, dataKey, photoId, { chunkSize: 32 });
+
+    let pulls = 0;
+    const flakyStream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        // Fewer than HEADER_BYTES (22), so the decryptor has buffered
+        // nothing decodable yet when the stream fails on the next read.
+        if (pulls === 1) {
+          controller.enqueue(container.slice(0, 10));
+          return;
+        }
+        throw new Error("network blip");
+      },
+    });
+
+    const events: DecryptEvent[] = [];
+    await runDecrypt(
+      { url: "https://example.test/original", dataKey, photoId, containerLength: container.length },
+      fakeFetch(flakyStream),
+      (e) => events.push(e),
+    );
+
+    expect(events.some((e) => e.type === "decrypted")).toBe(false);
+    const error = events.find((e): e is ErrorEvent => e.type === "error");
+    expect(error).toBeDefined();
+    expect(error!.kind).toBe("download");
+    expect(error!.message).toMatch(/network blip/);
   });
 });

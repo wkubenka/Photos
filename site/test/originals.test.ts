@@ -1,7 +1,7 @@
 // site/test/originals.test.ts
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { renderOriginals } from "../src/originals.js";
+import { renderOriginals, DecryptFailure, shouldRefillOriginalsSlot } from "../src/originals.js";
 import { SCHEMA_VERSION, type KeysFile, type Photo } from "@photos/core";
 
 const photo = (id = "a"): Photo => ({
@@ -112,5 +112,44 @@ describe("renderOriginals", () => {
     (node.querySelector("[data-action='view']") as HTMLButtonElement).click();
     await vi.waitFor(() => expect(node.textContent).toMatch(/does not match/i));
     expect(o.onImage).not.toHaveBeenCalled();
+  });
+
+  it("reports a network failure distinctly from tampering, without implying corruption", async () => {
+    const o = opts({
+      decrypt: vi.fn(async () => {
+        throw new DecryptFailure("download", "network down");
+      }),
+    });
+    const node = renderOriginals(o);
+    (node.querySelector("[data-action='view']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(node.textContent).toMatch(/could not be downloaded/i));
+    expect(node.textContent).not.toMatch(/could not be decrypted/i);
+    expect(o.onImage).not.toHaveBeenCalled();
+  });
+
+  it("reports every object URL it creates, once, from whichever of view or download creates it first", async () => {
+    const onObjectUrl = vi.fn();
+    const o = opts({ onObjectUrl });
+    const node = renderOriginals(o);
+    (node.querySelector("[data-action='download']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(node.querySelector("a[download]")).not.toBeNull());
+    expect(onObjectUrl).toHaveBeenCalledTimes(1);
+    expect(onObjectUrl).toHaveBeenCalledWith("blob:fake");
+
+    (node.querySelector("[data-action='view']") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(o.onImage).toHaveBeenCalledWith("blob:fake"));
+    // Reusing the same blob (decrypt already cached) must not report a
+    // second, redundant object URL.
+    expect(onObjectUrl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shouldRefillOriginalsSlot", () => {
+  it("re-fills only on the transition to unlocked", () => {
+    expect(shouldRefillOriginalsSlot({ kind: "unlocked" })).toBe(true);
+    expect(shouldRefillOriginalsSlot({ kind: "locked" })).toBe(false);
+    expect(shouldRefillOriginalsSlot({ kind: "deriving" })).toBe(false);
+    expect(shouldRefillOriginalsSlot({ kind: "wrong-password" })).toBe(false);
+    expect(shouldRefillOriginalsSlot({ kind: "unsupported", reason: "no webcrypto" })).toBe(false);
   });
 });

@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Library } from "../src/library.js";
+import type { LightboxHandle } from "../src/lightbox.js";
 import type { IndexFile, MonthEntry, MonthFile, Photo } from "@photos/core";
 
 const photo = (id: string, takenAt: string): Photo => ({
@@ -131,5 +132,66 @@ describe("createApp", () => {
     // No lightbox was open, so render() must not have touched focus at all —
     // it stays exactly wherever it already was.
     expect(document.activeElement).toBe(outside);
+  });
+});
+
+// These three cover the exact seam Task 25's fix round 1 found two bugs in:
+// main.ts's originals wiring depends on onLightboxOpen firing with the real
+// handle and photo, onLightboxClose firing on every close, and — critically
+// for revoking an object URL before adopting the next one — close always
+// firing before the next open when navigating photo to photo.
+describe("AppElements originals hooks", () => {
+  it("calls onLightboxOpen with the handle and photo once a lightbox is open", async () => {
+    const opens: { handle: LightboxHandle; photo: Photo }[] = [];
+    const instance = createApp(fakeLibrary(), {
+      app,
+      nav,
+      onLightboxOpen: (handle, photo) => {
+        opens.push({ handle, photo });
+      },
+    });
+    history.pushState(null, "", "?m=2026-03&photo=b");
+    await instance.render();
+
+    expect(opens).toHaveLength(1);
+    expect(opens[0]!.photo.id).toBe("b");
+    expect(opens[0]!.handle.element).toBe(document.querySelector(".lightbox"));
+  });
+
+  it("calls onLightboxClose exactly once when the lightbox closes", async () => {
+    let closes = 0;
+    const instance = createApp(fakeLibrary(), {
+      app,
+      nav,
+      onLightboxClose: () => {
+        closes++;
+      },
+    });
+    history.pushState(null, "", "?m=2026-03&photo=b");
+    await instance.render();
+    expect(closes).toBe(0);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await instance.render();
+    expect(closes).toBe(1);
+  });
+
+  it("closes the previous lightbox before opening the next when navigating photo to photo", async () => {
+    const calls: string[] = [];
+    const instance = createApp(fakeLibrary(), {
+      app,
+      nav,
+      onLightboxOpen: () => calls.push("open"),
+      onLightboxClose: () => calls.push("close"),
+    });
+    history.pushState(null, "", "?m=2026-03&photo=b");
+    await instance.render();
+    expect(calls).toEqual(["open"]);
+
+    // "b" and "a" are both in MARCH, so this is a photo-to-photo navigation
+    // with the lightbox already open, not a fresh open from nothing.
+    history.pushState(null, "", "?m=2026-03&photo=a");
+    await instance.render();
+    expect(calls).toEqual(["open", "close", "open"]);
   });
 });
