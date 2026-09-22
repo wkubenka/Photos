@@ -47,6 +47,14 @@ ACM certificate, and creates the Origin Access Control. It prints the
 certificate ARN and the OAC id — copy both; you need them for the rest of
 this runbook.
 
+Versioning and the lifecycle rule are non-negotiable, and they have to be
+turned on now, before anything is ever uploaded: S3 holds the only copy of
+the originals, versioning is what makes an overwritten manifest or a
+mistaken delete recoverable, and `photos restore` depends on it. Versioning
+cannot be applied retroactively to objects already written — an object
+uploaded before versioning was enabled has no prior version to fall back
+to — so this has to happen before Step 8 or any later publish, not after.
+
 ```bash
 CERT_ARN="<printed by bootstrap.sh>"
 OAC_ID="<printed by bootstrap.sh>"
