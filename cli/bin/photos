@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# Resolves everything relative to this script's own location, not the
+# caller's working directory, because this CLI is run from wherever the
+# photographs live -- not from the repo.
+#
+# Calls the workspace's locally installed tsx binary directly (rather than
+# `npx tsx`) so every invocation uses the exact version pinned in
+# package-lock.json, with no re-resolution or network fetch on each run.
+DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec "$DIR/../../node_modules/.bin/tsx" "$DIR/../src/bin.ts" "$@"

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "bin": {
-    "photos": "./dist/bin.js"
+    "photos": "./bin/photos"
   },
   "dependencies": {
     "@aws-sdk/client-cloudfront": "^3.1137.0",
