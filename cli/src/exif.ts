@@ -12,6 +12,35 @@ export interface ExtractedExif {
 
 const EXIF_DATETIME = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}:\d{2}:\d{2})$/;
 
+export function exifDateString(value: unknown): string {
+  // Handle plain strings - return as-is (already in wire format)
+  if (typeof value === "string") {
+    return value;
+  }
+
+  // Handle ExifDateTime-like objects
+  if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+
+    // Prefer rawValue if it's a string (the original EXIF input)
+    if (typeof obj.rawValue === "string") {
+      return obj.rawValue;
+    }
+
+    // Fall back to toExifString() if it exists and is callable
+    if (typeof obj.toExifString === "function") {
+      const result = obj.toExifString();
+      if (typeof result === "string") {
+        return result;
+      }
+    }
+  }
+
+  // For null, undefined, or other values, return empty string
+  // This allows the "unrecognised DateTimeOriginal" error to fire with useful context
+  return "";
+}
+
 export function assembleTakenAt(dateTimeOriginal: string, offset: string | undefined): string {
   const m = EXIF_DATETIME.exec(dateTimeOriginal.trim());
   if (!m) throw new Error(`unrecognised DateTimeOriginal: ${dateTimeOriginal}`);
@@ -52,7 +81,7 @@ export async function readExif(
 ): Promise<ExtractedExif> {
   const tags = await exiftool.read(path);
   const takenAt = assembleTakenAt(
-    str(tags.DateTimeOriginal ?? tags.CreateDate),
+    exifDateString(tags.DateTimeOriginal ?? tags.CreateDate),
     offsetOverride ?? (tags.OffsetTimeOriginal as string | undefined),
   );
 
