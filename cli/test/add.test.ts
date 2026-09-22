@@ -56,6 +56,13 @@ async function sourceFile(
   return path;
 }
 
+async function readTags(bytes: Uint8Array): Promise<Record<string, unknown>> {
+  const dir = mkdtempSync(join(tmpdir(), "photos-add-check-"));
+  const outPath = join(dir, "out.jpg");
+  writeFileSync(outPath, bytes);
+  return (await exiftool.read(outPath)) as Record<string, unknown>;
+}
+
 function deps(store = createMemoryStore()) {
   return {
     store,
@@ -110,12 +117,21 @@ describe("addPhotos", () => {
     expect(Object.keys(second.keys)).toHaveLength(2);
   }, 90_000);
 
-  it("rejects a second add under a different password", async () => {
+  it("rejects a second add under a different password, writing nothing", async () => {
     const store = createMemoryStore();
     await addPhotos(deps(store), [await sourceFile("a.jpg")], {});
+
+    const indexBefore = await readIndex(store);
+    const keysBefore = [...store.objects.keys()].sort();
+
     const wrong = { ...deps(store), password: async () => "a different passphrase" };
     await expect(addPhotos(wrong, [await sourceFile("b.jpg")], {}))
       .rejects.toThrow(/password/i);
+
+    const indexAfter = await readIndex(store);
+    expect(indexAfter.photoCount).toBe(1);
+    expect(indexAfter).toEqual(indexBefore);
+    expect([...store.objects.keys()].sort()).toEqual(keysBefore);
   }, 90_000);
 
   it("applies a batch location without prompting for one", async () => {
@@ -153,37 +169,37 @@ describe("addPhotos", () => {
   // The GPS pair: proves --keep-gps is actually wired end to end, not just
   // that Task 13's writeRights accepts an opts.gps object. Tags are read
   // back from the published derivative bytes, never from the source file.
-  it("keeps GPS in the published derivative when --keep-gps is passed", async () => {
+  it("keeps GPS in both published derivatives when --keep-gps is passed", async () => {
     const d = deps();
     const file = await sourceFile("gps-kept.jpg", {
       GPSLatitude: 29.2, GPSLongitude: -103.6,
     });
     const [photo] = await addPhotos(d, [file], { keepGps: true });
 
-    const webBytes = (await d.store.get(photo!.web.path))!;
-    const dir = mkdtempSync(join(tmpdir(), "photos-add-check-"));
-    const outPath = join(dir, "web.jpg");
-    writeFileSync(outPath, webBytes);
-    const tags = await exiftool.read(outPath);
+    const webTags = await readTags((await d.store.get(photo!.web.path))!);
+    expect(webTags.GPSLatitude).toBeCloseTo(29.2, 3);
+    expect(webTags.GPSLongitude).toBeCloseTo(-103.6, 3);
 
-    expect(tags.GPSLatitude).toBeCloseTo(29.2, 3);
-    expect(tags.GPSLongitude).toBeCloseTo(-103.6, 3);
+    const thumbTags = await readTags((await d.store.get(photo!.thumb.path))!);
+    expect(thumbTags.GPSLatitude).toBeCloseTo(29.2, 3);
+    expect(thumbTags.GPSLongitude).toBeCloseTo(-103.6, 3);
   }, 60_000);
 
-  it("strips GPS from the published derivative by default", async () => {
+  it("strips GPS from both published derivatives by default", async () => {
     const d = deps();
     const file = await sourceFile("gps-stripped.jpg", {
       GPSLatitude: 29.2, GPSLongitude: -103.6,
     });
     const [photo] = await addPhotos(d, [file], {});
 
-    const webBytes = (await d.store.get(photo!.web.path))!;
-    const dir = mkdtempSync(join(tmpdir(), "photos-add-check-"));
-    const outPath = join(dir, "web.jpg");
-    writeFileSync(outPath, webBytes);
-    const tags = await exiftool.read(outPath);
+    const webTags = await readTags((await d.store.get(photo!.web.path))!);
+    expect(webTags.GPSLatitude).toBeUndefined();
+    expect(webTags.GPSLongitude).toBeUndefined();
+    expect(webTags.GPSPosition).toBeUndefined();
 
-    expect(tags.GPSLatitude).toBeUndefined();
-    expect(tags.GPSLongitude).toBeUndefined();
+    const thumbTags = await readTags((await d.store.get(photo!.thumb.path))!);
+    expect(thumbTags.GPSLatitude).toBeUndefined();
+    expect(thumbTags.GPSLongitude).toBeUndefined();
+    expect(thumbTags.GPSPosition).toBeUndefined();
   }, 60_000);
 });
