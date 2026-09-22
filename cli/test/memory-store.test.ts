@@ -40,4 +40,26 @@ describe("memory store", () => {
     await expect(s.put("c", body, "x", "x")).rejects.toThrow(/simulated/i);
     expect(await s.get("c")).toBeNull();
   });
+
+  it("head returns the stored object's size for a key that exists", async () => {
+    const s = createMemoryStore();
+    await s.put("data/test.bin", body, "application/octet-stream", "x");
+    expect(await s.head("data/test.bin")).toEqual({ size: 3 });
+  });
+
+  it("head returns null for a missing key", async () => {
+    expect(await createMemoryStore().head("nope")).toBeNull();
+  });
+
+  it("delete removes a key so subsequent get returns null", async () => {
+    const s = createMemoryStore();
+    await s.put("data/test.json", body, "application/json", "x");
+    await s.delete("data/test.json");
+    expect(await s.get("data/test.json")).toBeNull();
+  });
+
+  it("delete on a missing key does not throw", async () => {
+    const s = createMemoryStore();
+    await expect(s.delete("nope")).resolves.toBeUndefined();
+  });
 });
